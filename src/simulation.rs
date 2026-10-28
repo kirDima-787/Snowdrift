@@ -19,9 +19,9 @@ const THAW_TIME: f32 = 30.0;
 const THAW_BALANCE: f32 = 184.0;
 const THAW_EXPONENT: f32 = 0.74;
 const DEPOSITION: f32 = 1.1;
-const REPOSE: f32 = 0.8;
-const ROUNDING: f32 = 0.15;
-const CURSOR_RADIUS: f32 = 10.0;
+const REPOSE: f32 = 0.95;
+const ROUNDING: f32 = 0.08;
+const CURSOR_RADIUS: f32 = 14.0;
 const CURSOR_OFFSET: V2 = V2::new(4.0, -8.0);
 const GRAVITY: f32 = 2500.0;
 const GRAIN_DRAG: f32 = 0.8;
@@ -1317,7 +1317,7 @@ impl Air {
         }
 
         let local = center.y - base.y;
-        let spray_share = smoothstep(30.0, 300.0, velocity.length());
+        let spray_share = smoothstep(40.0, 320.0, velocity.length()) * 0.40;
         let mut pushed_left = 0.0;
         let mut pushed_right = 0.0;
 

@@ -305,7 +305,7 @@ impl Screen {
         self.next_due = clock.schedule(now, rate);
         self.idle_frames = if changed { 0 } else { self.idle_frames + 1 };
         // A still pile only needs a slow refresh for its glints.
-        if !(changed || (self.simulation.has_snow() && self.idle_frames % 2 == 0)) {
+        if !(changed || (self.simulation.has_snow() && self.idle_frames % 30 == 0)) {
             return Ok(false);
         }
         self.surface.draw(gpu, &self.simulation, Ambient { light, shadow_tint: self.shadow_tint }, time)?;

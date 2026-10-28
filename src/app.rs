@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{POWERBROADCAST_SETTING, RegisterPowerSettingNotification};
@@ -253,14 +253,14 @@ fn send(app: &App, command: Command) {
     }
 }
 
-fn show_tray_panel(window: HWND, _x: i32, _y: i32) {
+fn show_tray_panel(window: HWND, x: i32, y: i32) {
     if panel::is_open() {
         panel::close();
         return;
     }
     let Some(settings) = APP.with_borrow(|app| app.as_ref().map(|app| app.settings)) else { return };
     let login = prefs::opens_at_login();
-    panel::show(settings, login, move |action| {
+    panel::show(POINT { x, y }, settings, login, move |action| {
         handle_panel_action(window, action);
     });
 }
