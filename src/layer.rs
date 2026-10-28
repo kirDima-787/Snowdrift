@@ -190,8 +190,21 @@ impl SnowLayer {
         }
         let center = ((x - self.base().x) / self.column_width).floor() as i64;
         let amount = area / self.column_width;
-        let kernel: &[(i64, f32)] =
-            if wide { &[(-2, 0.0625), (-1, 0.25), (0, 0.375), (1, 0.25), (2, 0.0625)] } else { &[(-1, 0.25), (0, 0.5), (1, 0.25)] };
+        let kernel: &[(i64, f32)] = if !self.opens_at_edges {
+            // Soft wide dispersion for the ground layer
+            if wide {
+                &[(-3, 0.04), (-2, 0.12), (-1, 0.22), (0, 0.24), (1, 0.22), (2, 0.12), (3, 0.04)]
+            } else {
+                &[(-2, 0.10), (-1, 0.25), (0, 0.30), (1, 0.25), (2, 0.10)]
+            }
+        } else {
+            // Compact kernel for window ledges
+            if wide {
+                &[(-2, 0.0625), (-1, 0.25), (0, 0.375), (1, 0.25), (2, 0.0625)]
+            } else {
+                &[(-1, 0.25), (0, 0.5), (1, 0.25)]
+            }
+        };
         let mut missed = 0.0;
         for &(offset, weight) in kernel {
             let i = center + offset;
@@ -364,11 +377,31 @@ impl SnowLayer {
     /// Writes the smoothed snow surface for each column, then the bed under it.
     pub fn write_smoothed(&self, buffer: &mut [f32]) {
         let count = self.heights.len();
-        for i in 0..count {
-            let left = self.heights[i.saturating_sub(1)];
-            let right = self.heights[(i + 1).min(count - 1)];
-            buffer[i] = self.bed[i] + 0.25 * left + 0.5 * self.heights[i] + 0.25 * right;
-            buffer[count + i] = self.bed[i];
+        if count == 0 {
+            return;
+        }
+        if !self.opens_at_edges {
+            // Ground layer (bottom snowdrifts): lush, soft, velvety 7-tap smoothing
+            for i in 0..count {
+                let h_m3 = self.heights[i.saturating_sub(3)];
+                let h_m2 = self.heights[i.saturating_sub(2)];
+                let h_m1 = self.heights[i.saturating_sub(1)];
+                let h_0 = self.heights[i];
+                let h_p1 = self.heights[(i + 1).min(count - 1)];
+                let h_p2 = self.heights[(i + 2).min(count - 1)];
+                let h_p3 = self.heights[(i + 3).min(count - 1)];
+                let smoothed = (h_m3 + 6.0 * h_m2 + 15.0 * h_m1 + 20.0 * h_0 + 15.0 * h_p1 + 6.0 * h_p2 + h_p3) / 64.0;
+                buffer[i] = self.bed[i] + smoothed;
+                buffer[count + i] = self.bed[i];
+            }
+        } else {
+            // Window ledges: compact 3-tap filter respecting window edges
+            for i in 0..count {
+                let left = self.heights[i.saturating_sub(1)];
+                let right = self.heights[(i + 1).min(count - 1)];
+                buffer[i] = self.bed[i] + 0.25 * left + 0.5 * self.heights[i] + 0.25 * right;
+                buffer[count + i] = self.bed[i];
+            }
         }
     }
 
@@ -398,7 +431,7 @@ impl SnowLayer {
         self.capacity = (0..self.heights.len())
             .map(|i| {
                 let x = i as f32 * self.column_width;
-                let drift = 0.12 * (x * 0.0105 + phase0).sin() + 0.07 * (x * 0.037 + phase1).sin();
+                let drift = 0.16 * (x * 0.004 + phase0).sin() + 0.09 * (x * 0.011 + phase1).sin() + 0.04 * (x * 0.024 + phase0 * 1.5).sin();
                 self.depth * (0.95 + drift)
             })
             .collect();

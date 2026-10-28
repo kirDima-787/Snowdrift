@@ -65,10 +65,9 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     write_number(UNINSTALL, w!("NoModify"), 1);
     write_number(UNINSTALL, w!("NoRepair"), 1);
     write_number(UNINSTALL, w!("EstimatedSize"), app.len().div_ceil(1024) as u32);
-    // Open at Login follows the app to where it now lives.
-    if read_string(RUN, NAME).is_some() {
-        write_string(RUN, NAME, &quoted);
-    }
+    // Open at Login by default: launches beautifully with Windows
+    let startup_cmd = format!("{quoted} --startup");
+    write_string(RUN, NAME, &startup_cmd);
     Ok(exe)
 }
 

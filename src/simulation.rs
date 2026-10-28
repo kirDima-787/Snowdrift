@@ -921,8 +921,11 @@ impl SnowSimulation {
                 }
             }
             // Shaken harder than gravity, a granular pile fluidizes and slumps to a flatter slope.
-            let repose = if layer.agitation > SHAKING { REPOSE * 0.35 } else { REPOSE };
-            if layer.relax(repose, ROUNDING) {
+            let is_ground = li == 0;
+            let base_repose = if is_ground { 0.48 } else { REPOSE };
+            let repose = if layer.agitation > SHAKING { base_repose * 0.35 } else { base_repose };
+            let rounding = if is_ground { 0.30 } else { ROUNDING };
+            if layer.relax(repose, rounding) {
                 self.air.heights_changed = true;
             }
             if layer.spill_left > 1.5 {
@@ -1360,12 +1363,20 @@ impl Air {
             }
         }
 
-        for (area, x) in [(pushed_left, center.x - radius - COLUMN_WIDTH * 3.0), (pushed_right, center.x + radius + COLUMN_WIDTH * 3.0)] {
+        for (area, base_x, dir) in [
+            (pushed_left, center.x - radius - COLUMN_WIDTH * 2.0, -1.0),
+            (pushed_right, center.x + radius + COLUMN_WIDTH * 2.0, 1.0),
+        ] {
             if area <= 0.0 {
                 continue;
             }
-            let missed = layer.deposit(area, x, true);
-            self.drop_past(layer, missed, x, velocity.x * 0.5);
+            let sub_areas = [area * 0.45, area * 0.35, area * 0.20];
+            let offsets = [0.0, dir * COLUMN_WIDTH * 2.5, dir * COLUMN_WIDTH * 5.0];
+            for (sub_area, offset) in sub_areas.into_iter().zip(offsets) {
+                let x = base_x + offset;
+                let missed = layer.deposit(sub_area, x, true);
+                self.drop_past(layer, missed, x, velocity.x * 0.5);
+            }
         }
     }
 

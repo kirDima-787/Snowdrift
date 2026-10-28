@@ -60,7 +60,10 @@ pub fn opens_at_login() -> bool {
         return false;
     }
     let length = buffer.iter().position(|&c| c == 0).unwrap_or(0);
-    command().is_some_and(|command| command[..command.len() - 1] == buffer[..length])
+    let Ok(path) = std::env::current_exe() else { return false };
+    let path_str = path.display().to_string();
+    let val = String::from_utf16_lossy(&buffer[..length]);
+    val.contains(&path_str)
 }
 
 pub fn set_opens_at_login(on: bool) -> WIN32_ERROR {
@@ -73,10 +76,10 @@ pub fn set_opens_at_login(on: bool) -> WIN32_ERROR {
     }
 }
 
-/// The quoted path of this executable, NUL-terminated.
+/// The quoted path of this executable with --startup, NUL-terminated.
 fn command() -> Option<Vec<u16>> {
     let path = std::env::current_exe().ok()?;
-    Some(format!("\"{}\"", path.display()).encode_utf16().chain([0]).collect())
+    Some(format!("\"{}\" --startup", path.display()).encode_utf16().chain([0]).collect())
 }
 
 fn read(name: PCWSTR) -> Option<u32> {

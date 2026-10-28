@@ -46,6 +46,7 @@ const ID_QUIT: u32 = 299;
 
 const TIMER_WELCOME: usize = 1;
 const TIMER_UPDATE: usize = 2;
+const TIMER_STARTUP: usize = 3;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
@@ -108,6 +109,11 @@ pub fn run() -> Result<()> {
         }
         // Check for updates 5 seconds after startup in background
         SetTimer(Some(window), TIMER_UPDATE, 5000, None);
+
+        if std::env::args().any(|arg| arg.eq_ignore_ascii_case("--startup")) {
+            // Elegant startup notification when booting with Windows
+            SetTimer(Some(window), TIMER_STARTUP, 1500, None);
+        }
 
         APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false }));
 
@@ -188,6 +194,13 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
                 let _ = SetTimer(Some(window), TIMER_UPDATE, 24 * 60 * 60 * 1000, None);
             }
             check_for_updates(window, false);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_STARTUP => {
+            unsafe {
+                let _ = KillTimer(Some(window), TIMER_STARTUP);
+            }
+            notify(window, "Snowdrift", "Зимний снегопад запущен.");
             LRESULT(0)
         }
         WM_UPDATE_CHECK => {
