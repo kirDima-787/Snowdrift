@@ -47,8 +47,15 @@ fn main() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
-    if std::env::args().skip(1).any(|argument| argument.eq_ignore_ascii_case("--silent") || argument.eq_ignore_ascii_case("/s")) {
-        std::process::exit(if install::install(APP, VERSION).is_ok() { 0 } else { 1 });
+    if std::env::args().skip(1).any(|argument| argument.eq_ignore_ascii_case("--silent") || argument.eq_ignore_ascii_case("/s") || argument.eq_ignore_ascii_case("--update")) {
+        let code = match install::install(APP, VERSION) {
+            Ok(exe) => {
+                install::launch(&exe);
+                0
+            }
+            Err(_) => 1,
+        };
+        std::process::exit(code);
     }
     if open().is_err() {
         // Without the card, fall back to installing and opening the app, which is what the card would lead to.

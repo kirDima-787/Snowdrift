@@ -5,6 +5,8 @@ pub mod geometry;
 pub mod install;
 pub mod layer;
 pub mod simulation;
+#[cfg(windows)]
+pub mod update;
 pub mod version;
 
 #[cfg(test)]

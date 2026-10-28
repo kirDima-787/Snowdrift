@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::mem::size_of;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
@@ -13,8 +14,8 @@ use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows::Win32::System::Threading::{CreateEventW, SetEvent};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NIN_SELECT,
-    NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
+    NIN_SELECT, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
@@ -24,10 +25,14 @@ use crate::prefs::{self, Settings};
 use crate::snow::{self, Command, Links};
 use crate::welcome::{self, Handlers};
 use snowdrift::simulation::Snowfall;
+use snowdrift::update::{self, Release};
 
 const CLASS: PCWSTR = w!("SnowdriftController");
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_UPDATE_CHECK: u32 = WM_APP + 2;
+const WM_UPDATE_DOWNLOADED: u32 = WM_APP + 3;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
+
 const ID_SNOWFALL: u32 = 100;
 const ID_ACCUMULATE: u32 = 200;
 const ID_MELT: u32 = 201;
@@ -36,8 +41,11 @@ const ID_LOGIN: u32 = 203;
 const ID_WINDOWS: u32 = 204;
 const ID_BEHIND: u32 = 205;
 const ID_CLEAR: u32 = 207;
+const ID_UPDATES: u32 = 208;
 const ID_QUIT: u32 = 299;
+
 const TIMER_WELCOME: usize = 1;
+const TIMER_UPDATE: usize = 2;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
@@ -70,7 +78,20 @@ pub fn run() -> Result<()> {
             ..Default::default()
         };
         RegisterClassExW(&class);
-        let window = CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("Snowdrift"), WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None)?;
+        let window = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            CLASS,
+            w!("Snowdrift"),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )?;
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
 
         let settings = Settings::load();
@@ -85,6 +106,9 @@ pub fn run() -> Result<()> {
         if !settings.welcomed {
             SetTimer(Some(window), TIMER_WELCOME, 1200, None);
         }
+        // Check for updates 5 seconds after startup in background
+        SetTimer(Some(window), TIMER_UPDATE, 5000, None);
+
         APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false }));
 
         let mut message = MSG::default();
@@ -158,6 +182,25 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             });
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == TIMER_UPDATE => {
+            unsafe {
+                // Next check in 24 hours
+                let _ = SetTimer(Some(window), TIMER_UPDATE, 24 * 60 * 60 * 1000, None);
+            }
+            check_for_updates(window, false);
+            LRESULT(0)
+        }
+        WM_UPDATE_CHECK => {
+            let asked = wparam.0 != 0;
+            let result = unsafe { *Box::from_raw(lparam.0 as *mut std::result::Result<Option<Release>, String>) };
+            on_update_checked(window, result, asked);
+            LRESULT(0)
+        }
+        WM_UPDATE_DOWNLOADED => {
+            let result = unsafe { *Box::from_raw(lparam.0 as *mut std::result::Result<PathBuf, String>) };
+            on_update_downloaded(window, result);
+            LRESULT(0)
+        }
         _ if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) => {
             APP.with_borrow(|app| {
                 if let Some(app) = app {
@@ -214,6 +257,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, w!("Show in Screenshots"));
         let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, w!("Open at Login"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATES as usize, w!("Check for Updates…"));
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT as usize, w!("Quit"));
 
         // A tray menu only closes on an outside click while its owner is in the foreground.
@@ -230,6 +274,7 @@ fn choose(window: HWND, chosen: u32, login: bool) {
     match chosen {
         0 => {}
         ID_QUIT => quit(window),
+        ID_UPDATES => check_for_updates(window, true),
         ID_CLEAR => APP.with_borrow(|app| {
             if let Some(app) = app {
                 send(app, Command::ClearSnow(!prefs::animations_enabled()));
@@ -272,6 +317,118 @@ fn choose(window: HWND, chosen: u32, login: bool) {
             settings.save();
             send(app, command);
         }),
+    }
+}
+
+fn check_for_updates(window: HWND, asked: bool) {
+    let target = window.0 as isize;
+    thread::spawn(move || {
+        let result = Box::new(update::check());
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(target as _)),
+                WM_UPDATE_CHECK,
+                WPARAM(asked as usize),
+                LPARAM(Box::into_raw(result) as isize),
+            );
+        }
+    });
+}
+
+fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, String>, asked: bool) {
+    let current = env!("CARGO_PKG_VERSION");
+    match result {
+        Ok(Some(release)) => {
+            let text = format!(
+                "Доступна новая версия Snowdrift {} (у вас установлена {current}).\n\nЗагрузить и обновить сейчас?",
+                release.version
+            );
+            if message(window, &text, MB_YESNO | MB_ICONINFORMATION) == IDYES {
+                notify(window, "Snowdrift", "Загрузка обновления в фоне…");
+                download_and_apply(window, release.url);
+            }
+        }
+        Ok(None) if asked => {
+            message(
+                window,
+                &format!("У вас установлена последняя версия Snowdrift ({current})."),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log!("update check failed: {error}");
+            if asked {
+                message(
+                    window,
+                    &format!("Не удалось проверить обновления.\n\n{error}"),
+                    MB_OK | MB_ICONWARNING,
+                );
+            }
+        }
+    }
+}
+
+fn download_and_apply(window: HWND, url: String) {
+    let target = window.0 as isize;
+    thread::spawn(move || {
+        let res = Box::new(update::download_installer(&url));
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(target as _)),
+                WM_UPDATE_DOWNLOADED,
+                WPARAM(0),
+                LPARAM(Box::into_raw(res) as isize),
+            );
+        }
+    });
+}
+
+fn on_update_downloaded(window: HWND, result: std::result::Result<PathBuf, String>) {
+    match result {
+        Ok(installer) => {
+            if let Err(error) = update::run_installer(&installer) {
+                message(
+                    window,
+                    &format!("Не удалось запустить установщик обновления:\n\n{error}"),
+                    MB_OK | MB_ICONERROR,
+                );
+            } else {
+                quit(window);
+            }
+        }
+        Err(error) => {
+            message(
+                window,
+                &format!("Не удалось загрузить обновление:\n\n{error}"),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+}
+
+fn message(window: HWND, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
+    let text: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    unsafe { MessageBoxW(Some(window), PCWSTR(text.as_ptr()), w!("Snowdrift"), style | MB_SETFOREGROUND | MB_TOPMOST) }
+}
+
+fn notify(window: HWND, title: &str, text: &str) {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: window,
+        uID: 1,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    for (slot, unit) in data.szInfoTitle.iter_mut().zip(title.encode_utf16().take(63)) {
+        *slot = unit;
+    }
+    for (slot, unit) in data.szInfo.iter_mut().zip(text.encode_utf16().take(255)) {
+        *slot = unit;
+    }
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
     }
 }
 

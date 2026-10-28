@@ -1,6 +1,6 @@
 [package]
 name = "snowdrift"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 publish = false
 autobins = false
@@ -24,6 +24,7 @@ windows-numerics = "0.3"
 version = "0.62"
 features = [
     "Win32_Foundation",
+    "Win32_Networking_WinHttp",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_Direct3D",
