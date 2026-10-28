@@ -77,10 +77,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build Windows binary & installer
-        shell: pwsh
+        shell: bash
         run: |
           cargo build --release --bin Snowdrift
-          $env:SNOWDRIFT_APP = (Resolve-Path "target/release/Snowdrift.exe").Path
+          export SNOWDRIFT_APP="$PWD/target/release/Snowdrift.exe"
           cargo build --release --features setup --bin Snowdrift-Setup
 
       - name: Upload Windows binaries to Release

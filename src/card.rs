@@ -35,11 +35,12 @@ use windows_numerics::Vector2;
 
 /// Room around the card for its shadow.
 pub const MARGIN: f32 = 36.0;
-const BACKGROUND: [f32; 3] = [0.105, 0.088, 0.072];
-const INK: [f32; 3] = [0.93, 0.9, 0.85];
-const MUTED: [f32; 3] = [0.78, 0.75, 0.7];
-const LABEL: [f32; 3] = [0.09, 0.075, 0.06];
-const BUTTON: (f32, f32) = (190.0, 44.0);
+const BACKGROUND: [f32; 3] = [0.08, 0.10, 0.15];
+const INK: [f32; 3] = [0.96, 0.98, 1.0];
+const MUTED: [f32; 3] = [0.68, 0.76, 0.88];
+const ACCENT: [f32; 3] = [0.22, 0.58, 0.96];
+const LABEL: [f32; 3] = [1.0, 1.0, 1.0];
+const BUTTON: (f32, f32) = (196.0, 44.0);
 const ICON: &[u8] = include_bytes!("../assets/icon-256.png");
 
 /// What the card shows, top to bottom.
@@ -134,8 +135,8 @@ impl Card {
         let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + self.width, bottom: MARGIN + self.height };
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
         unsafe {
-            // A soft shadow from stacked translucent outlines, lighter as they spread.
-            let shade = brush([0.0; 3], 0.022)?;
+            // A soft cool shadow from stacked translucent outlines, lighter as they spread.
+            let shade = brush([0.02, 0.04, 0.08], 0.035)?;
             for step in 0..16 {
                 let spread = step as f32 * 1.6;
                 let rect = D2D_RECT_F {
@@ -144,12 +145,13 @@ impl Card {
                     right: card.right + spread,
                     bottom: card.bottom + spread + 10.0,
                 };
-                target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 18.0 + spread, radiusY: 18.0 + spread }, &shade);
+                target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 22.0 + spread, radiusY: 22.0 + spread }, &shade);
             }
             let inset = D2D_RECT_F { left: card.left + 0.5, top: card.top + 0.5, right: card.right - 0.5, bottom: card.bottom - 0.5 };
-            let shape = D2D1_ROUNDED_RECT { rect: inset, radiusX: 18.0, radiusY: 18.0 };
+            let shape = D2D1_ROUNDED_RECT { rect: inset, radiusX: 22.0, radiusY: 22.0 };
             target.FillRoundedRectangle(&shape, &brush(BACKGROUND, 1.0)?);
-            target.DrawRoundedRectangle(&shape, &brush([1.0; 3], 0.08)?, 1.0, None);
+            // Subtle glowing frosty cyan-blue outline
+            target.DrawRoundedRectangle(&shape, &brush([0.35, 0.65, 1.0], 0.22)?, 1.2, None);
 
             let text_width = self.width - 64.0;
             let body_width = text_width.min(330.0);
@@ -186,8 +188,8 @@ impl Card {
 
             let left = card.left + (self.width - BUTTON.0) / 2.0;
             let button = D2D_RECT_F { left, top: y, right: left + BUTTON.0, bottom: y + BUTTON.1 };
-            let fill = if content.pressed { INK.map(|c| c * 0.88) } else { INK };
-            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: button, radiusX: 2.0, radiusY: 2.0 }, &brush(fill, 1.0)?);
+            let fill = if content.pressed { ACCENT.map(|c| c * 0.85) } else { ACCENT };
+            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: button, radiusX: 10.0, radiusY: 10.0 }, &brush(fill, 1.0)?);
             target.DrawTextLayout(Vector2 { X: left, Y: y }, &label, &brush(LABEL, 1.0)?, D2D1_DRAW_TEXT_OPTIONS_NONE);
 
             let close = content.closable.then(|| {
