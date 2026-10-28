@@ -292,11 +292,14 @@ impl Screen {
         let changed = self.simulation.step(dt, self.cursor());
 
         let fastest = if budget == PowerBudget::Full { self.interactive_rate } else { self.interactive_rate.min(60) };
-        // 24 only where it divides the display's rate evenly; elsewhere it would judder.
-        let calm = if budget == PowerBudget::Saver && self.interactive_rate % 24 == 0 { 24 } else { 30 };
+        let calm = if budget == PowerBudget::Saver {
+            if self.interactive_rate % 24 == 0 { 24 } else { 30 }
+        } else {
+            fastest.min(60)
+        };
         let rate = match self.simulation.pace() {
             Pace::Calm => calm,
-            Pace::Lively => fastest.min(60),
+            Pace::Lively => fastest,
             Pace::Interactive => fastest,
         };
         self.next_due = clock.schedule(now, rate);

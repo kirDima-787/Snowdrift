@@ -21,7 +21,7 @@ const THAW_EXPONENT: f32 = 0.74;
 const DEPOSITION: f32 = 1.1;
 const REPOSE: f32 = 0.8;
 const ROUNDING: f32 = 0.15;
-const CURSOR_RADIUS: f32 = 10.0;
+const CURSOR_RADIUS: f32 = 18.0;
 const CURSOR_OFFSET: V2 = V2::new(4.0, -8.0);
 const GRAVITY: f32 = 2500.0;
 const GRAIN_DRAG: f32 = 0.8;
@@ -393,7 +393,8 @@ impl SnowSimulation {
         }
         let air = &self.air;
         // Only a cursor that actually displaces snow needs the full rate; one passing near it or resting in it changes nothing.
-        let pushed = air.clock - air.last_window_motion < 0.6 || air.clock - air.last_cursor_push < 0.3 || air.gust.is_some();
+        let cursor_moving = self.air.cursor_velocity.length_squared() > 100.0;
+        let pushed = cursor_moving || air.clock - air.last_window_motion < 0.6 || air.clock - air.last_cursor_push < 0.6 || air.gust.is_some();
         // The steady trickle off window corners is a few tiny grains at a time; they read fine at the calm rate.
         let flying = air.grains.len() > 24 || air.clock < self.scattered_until;
         self.pace = if pushed {
@@ -615,7 +616,7 @@ impl SnowSimulation {
         if speed > 3000.0 {
             velocity *= 3000.0 / speed;
         }
-        self.air.cursor_velocity += (velocity - self.air.cursor_velocity) * 0.5;
+        self.air.cursor_velocity += (velocity - self.air.cursor_velocity) * 0.75;
 
         let low = center.y.min(previous.y) - CURSOR_RADIUS;
         let high = center.y.max(previous.y) + CURSOR_RADIUS;
@@ -658,11 +659,11 @@ impl SnowSimulation {
         let wind = self.air.breeze();
         let follow = (dt * 1.2).min(1.0);
         let settle = (dt * 1.6).min(1.0);
-        let wake_radius: f32 = 80.0;
+        let wake_radius: f32 = 110.0;
         let mut wake_velocity = self.air.cursor_velocity;
         let wake_speed = wake_velocity.length();
-        if wake_speed > 500.0 {
-            wake_velocity *= 500.0 / wake_speed;
+        if wake_speed > 1500.0 {
+            wake_velocity *= 1500.0 / wake_speed;
         }
         let wake_center = self.air.cursor.unwrap_or(V2::new(-10_000.0, -10_000.0));
         let wake_active = wake_speed > 20.0;
@@ -680,10 +681,14 @@ impl SnowSimulation {
             flake.velocity.y += (-flake.fall_speed - flake.velocity.y) * settle;
 
             if wake_active {
-                let distance_squared = (flake.position - wake_center).length_squared();
+                let diff = flake.position - wake_center;
+                let distance_squared = diff.length_squared();
                 if distance_squared < wake_radius * wake_radius {
-                    let falloff = 1.0 - distance_squared.sqrt() / wake_radius;
-                    flake.velocity += (wake_velocity - flake.velocity) * (falloff * falloff * 4.0 * dt).min(1.0);
+                    let dist = distance_squared.sqrt();
+                    let falloff = 1.0 - dist / wake_radius;
+                    let outward = if dist > 0.1 { diff / dist } else { V2::new(0.0, 1.0) };
+                    let impulse = wake_velocity * 0.85 + outward * (wake_speed * 0.5 + 80.0);
+                    flake.velocity += (impulse - flake.velocity) * (falloff * 14.0 * dt).min(1.0);
                 }
             }
 
@@ -1301,7 +1306,7 @@ impl Air {
         }
 
         let local = center.y - base.y;
-        let spray_share = smoothstep(60.0, 420.0, velocity.length());
+        let spray_share = smoothstep(30.0, 300.0, velocity.length());
         let mut pushed_left = 0.0;
         let mut pushed_right = 0.0;
 
