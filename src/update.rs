@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use windows::Win32::Networking::WinHttp::{
     WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
+    WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE, WINHTTP_QUERY_CONTENT_LENGTH, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
     WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -47,10 +47,10 @@ pub fn check() -> Result<Option<Release>, String> {
     Ok(Some(Release { version: version.to_string(), url }))
 }
 
-pub fn download_installer(url: &str) -> Result<PathBuf, String> {
+pub fn download_installer(url: &str, progress: Option<Box<dyn Fn(u32, u32) + Send>>) -> Result<PathBuf, String> {
     let temp_file = std::env::temp_dir().join(INSTALLER);
     let _ = std::fs::remove_file(&temp_file);
-    download_file(url, &temp_file)?;
+    download_file(url, &temp_file, &progress)?;
     Ok(temp_file)
 }
 
@@ -207,7 +207,7 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
     Err("Too many redirects".into())
 }
 
-fn download_file(url: &str, target_path: &Path) -> Result<(), String> {
+fn download_file(url: &str, target_path: &Path, progress: &Option<Box<dyn Fn(u32, u32) + Send>>) -> Result<(), String> {
     let mut current_url = url.to_string();
     let mut redirects = 0;
 
@@ -302,8 +302,22 @@ fn download_file(url: &str, target_path: &Path) -> Result<(), String> {
             return Err(format!("Download failed with status {status}"));
         }
 
+        let mut content_length = 0u32;
+        let mut cl_size = 4u32;
+        unsafe {
+            let _ = WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                PCWSTR::null(),
+                Some((&raw mut content_length).cast()),
+                &mut cl_size,
+                std::ptr::null_mut(),
+            );
+        }
+
         let mut file = File::create(target_path).map_err(|e| format!("Failed to create destination file: {e}"))?;
         let mut buffer = vec![0u8; 64 * 1024];
+        let mut total_read = 0u32;
         loop {
             let mut read = 0u32;
             unsafe {
@@ -315,6 +329,10 @@ fn download_file(url: &str, target_path: &Path) -> Result<(), String> {
             }
             file.write_all(&buffer[..read as usize])
                 .map_err(|e| format!("Failed to write downloaded data: {e}"))?;
+            total_read += read;
+            if let Some(cb) = progress {
+                cb(total_read, content_length);
+            }
         }
         return Ok(());
     }

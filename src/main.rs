@@ -9,6 +9,8 @@ mod light;
 #[cfg(windows)]
 mod log;
 #[cfg(windows)]
+mod panel;
+#[cfg(windows)]
 mod prefs;
 #[cfg(windows)]
 mod render;
@@ -16,6 +18,8 @@ mod render;
 mod screen;
 #[cfg(windows)]
 mod snow;
+#[cfg(windows)]
+mod toast;
 #[cfg(windows)]
 mod tracker;
 #[cfg(windows)]

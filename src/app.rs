@@ -24,27 +24,18 @@ use crate::log;
 use crate::prefs::{self, Settings};
 use crate::snow::{self, Command, Links};
 use crate::welcome::{self, Handlers};
-use snowdrift::simulation::Snowfall;
+use crate::panel::{self, PanelAction};
+use crate::toast::{self, ToastCallbacks, ToastState};
 use snowdrift::update::{self, Release};
 
 const CLASS: PCWSTR = w!("SnowdriftController");
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_UPDATE_CHECK: u32 = WM_APP + 2;
 const WM_UPDATE_DOWNLOADED: u32 = WM_APP + 3;
+const WM_UPDATE_PROGRESS: u32 = WM_APP + 4;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
-const ID_SNOWFALL: u32 = 100;
-const ID_ACCUMULATE: u32 = 200;
-const ID_MELT: u32 = 201;
-const ID_SCREENSHOTS: u32 = 202;
-const ID_LOGIN: u32 = 203;
-const ID_WINDOWS: u32 = 204;
-const ID_BEHIND: u32 = 205;
-const ID_CLEAR: u32 = 207;
-const ID_UPDATES: u32 = 208;
-const ID_LANG_EN: u32 = 210;
-const ID_LANG_RU: u32 = 211;
-const ID_QUIT: u32 = 299;
+
 
 const TIMER_WELCOME: usize = 1;
 const TIMER_UPDATE: usize = 2;
@@ -135,7 +126,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             if event == WM_CONTEXTMENU || event == NIN_SELECT || event == NIN_KEYSELECT {
                 let x = (wparam.0 & 0xffff) as i16 as i32;
                 let y = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
-                show_menu(window, x, y);
+                show_tray_panel(window, x, y);
             }
             LRESULT(0)
         }
@@ -220,6 +211,13 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             on_update_checked(window, result, asked);
             LRESULT(0)
         }
+        WM_UPDATE_PROGRESS => {
+            let percent = wparam.0 as u32;
+            let read_kb = ((lparam.0 >> 16) & 0xffff) as u32;
+            let total_kb = (lparam.0 & 0xffff) as u32;
+            toast::update_progress(percent, read_kb * 1024, total_kb * 1024);
+            LRESULT(0)
+        }
         WM_UPDATE_DOWNLOADED => {
             let result = unsafe { *Box::from_raw(lparam.0 as *mut std::result::Result<PathBuf, String>) };
             on_update_downloaded(window, result);
@@ -255,137 +253,91 @@ fn send(app: &App, command: Command) {
     }
 }
 
-fn show_menu(window: HWND, x: i32, y: i32) {
+fn show_tray_panel(window: HWND, _x: i32, _y: i32) {
+    if panel::is_open() {
+        panel::close();
+        return;
+    }
     let Some(settings) = APP.with_borrow(|app| app.as_ref().map(|app| app.settings)) else { return };
     let login = prefs::opens_at_login();
-    let is_ru = settings.language.is_ru();
-    let chosen = unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
-        let Ok(snowfall) = CreatePopupMenu() else { return };
-        for (i, option) in Snowfall::ALL.iter().enumerate() {
-            let title_str = if is_ru { option.title_ru() } else { option.title() };
-            let title: Vec<u16> = title_str.encode_utf16().chain([0]).collect();
-            let _ = AppendMenuW(snowfall, MF_STRING, (ID_SNOWFALL + i as u32) as usize, PCWSTR(title.as_ptr()));
-        }
-        let current = Snowfall::ALL.iter().position(|&s| s == settings.snowfall).unwrap_or(0) as u32;
-        let _ = CheckMenuRadioItem(snowfall, ID_SNOWFALL, ID_SNOWFALL + 4, ID_SNOWFALL + current, MF_BYCOMMAND.0);
-        let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
-
-        let label_snowfall: Vec<u16> = (if is_ru { "Интенсивность" } else { "Snowfall" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_POPUP, snowfall.0 as usize, PCWSTR(label_snowfall.as_ptr()));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-
-        let label_acc: Vec<u16> = (if is_ru { "Сугробы" } else { "Accumulate" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.accumulate), ID_ACCUMULATE as usize, PCWSTR(label_acc.as_ptr()));
-
-        let melt = MF_STRING | checked(settings.melt) | if settings.accumulate { MF_ENABLED } else { MF_GRAYED };
-        let label_melt: Vec<u16> = (if is_ru { "Таяние снега" } else { "Melt Snow" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, melt, ID_MELT as usize, PCWSTR(label_melt.as_ptr()));
-
-        let windows = MF_STRING | checked(settings.snow_on_windows) | if settings.behind_windows { MF_GRAYED } else { MF_ENABLED };
-        let label_win: Vec<u16> = (if is_ru { "Снег на окнах" } else { "Snow on Windows" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, windows, ID_WINDOWS as usize, PCWSTR(label_win.as_ptr()));
-
-        let label_clear: Vec<u16> = (if is_ru { "Очистить снег" } else { "Clear Snow" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING, ID_CLEAR as usize, PCWSTR(label_clear.as_ptr()));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-
-        let label_behind: Vec<u16> = (if is_ru { "За окнами" } else { "Behind Windows" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND as usize, PCWSTR(label_behind.as_ptr()));
-
-        let label_shots: Vec<u16> = (if is_ru { "Видно на скриншотах" } else { "Show in Screenshots" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, PCWSTR(label_shots.as_ptr()));
-
-        let label_login: Vec<u16> = (if is_ru { "Автозапуск при входе" } else { "Open at Login" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, PCWSTR(label_login.as_ptr()));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-
-        let Ok(lang_menu) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(lang_menu, MF_STRING | checked(!is_ru), ID_LANG_EN as usize, w!("English"));
-        let _ = AppendMenuW(lang_menu, MF_STRING | checked(is_ru), ID_LANG_RU as usize, w!("Русский"));
-        let _ = CheckMenuRadioItem(lang_menu, ID_LANG_EN, ID_LANG_RU, if is_ru { ID_LANG_RU } else { ID_LANG_EN }, MF_BYCOMMAND.0);
-        let label_lang: Vec<u16> = (if is_ru { "Язык" } else { "Language" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_POPUP, lang_menu.0 as usize, PCWSTR(label_lang.as_ptr()));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-
-        let label_updates: Vec<u16> = (if is_ru { "Проверить обновления…" } else { "Check for Updates…" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATES as usize, PCWSTR(label_updates.as_ptr()));
-
-        let label_quit: Vec<u16> = (if is_ru { "Выход" } else { "Quit" }).encode_utf16().chain([0]).collect();
-        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT as usize, PCWSTR(label_quit.as_ptr()));
-
-        // A tray menu only closes on an outside click while its owner is in the foreground.
-        let _ = SetForegroundWindow(window);
-        let chosen = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY).0, x, y, window, None).0 as u32;
-        let _ = PostMessageW(Some(window), WM_NULL, WPARAM(0), LPARAM(0));
-        let _ = DestroyMenu(menu);
-        chosen
-    };
-    choose(window, chosen, login);
+    panel::show(settings, login, move |action| {
+        handle_panel_action(window, action);
+    });
 }
 
-fn choose(window: HWND, chosen: u32, login: bool) {
-    match chosen {
-        0 => {}
-        ID_QUIT => quit(window),
-        ID_UPDATES => check_for_updates(window, true),
-        ID_CLEAR => APP.with_borrow(|app| {
+fn handle_panel_action(window: HWND, action: PanelAction) {
+    match action {
+        PanelAction::Quit => quit(window),
+        PanelAction::CheckUpdates => check_for_updates(window, true),
+        PanelAction::ClearSnow => APP.with_borrow(|app| {
             if let Some(app) = app {
                 send(app, Command::ClearSnow(!prefs::animations_enabled()));
             }
         }),
-        ID_LOGIN => {
-            let status = prefs::set_opens_at_login(!login);
-            log!("open at login {}: {status:?}", !login);
+        PanelAction::OpenAtLogin(on) => {
+            let status = prefs::set_opens_at_login(on);
+            log!("open at login {}: {status:?}", on);
         }
-        ID_LANG_EN => APP.with_borrow_mut(|app| {
+        PanelAction::Language(lang) => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };
-            app.settings.language = snowdrift::card::Language::En;
+            app.settings.language = lang;
             app.settings.save();
         }),
-        ID_LANG_RU => APP.with_borrow_mut(|app| {
+        PanelAction::Snowfall(snowfall) => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };
-            app.settings.language = snowdrift::card::Language::Ru;
+            app.settings.snowfall = snowfall;
             app.settings.save();
+            send(app, Command::Snowfall(snowfall));
         }),
-        _ => APP.with_borrow_mut(|app| {
+        PanelAction::Accumulate(accumulate) => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };
-            let settings = &mut app.settings;
-            let command = match chosen {
-                ID_ACCUMULATE => {
-                    settings.accumulate = !settings.accumulate;
-                    Command::Accumulate(settings.accumulate)
-                }
-                ID_MELT => {
-                    settings.melt = !settings.melt;
-                    Command::Melt(settings.melt)
-                }
-                ID_WINDOWS => {
-                    settings.snow_on_windows = !settings.snow_on_windows;
-                    Command::SnowOnWindows(settings.snow_on_windows)
-                }
-                ID_BEHIND => {
-                    settings.behind_windows = !settings.behind_windows;
-                    Command::BehindWindows(settings.behind_windows)
-                }
-                ID_SCREENSHOTS => {
-                    settings.show_in_screenshots = !settings.show_in_screenshots;
-                    Command::ShowInScreenshots(settings.show_in_screenshots)
-                }
-                _ => {
-                    let Some(&snowfall) = Snowfall::ALL.get(chosen.wrapping_sub(ID_SNOWFALL) as usize) else { return };
-                    settings.snowfall = snowfall;
-                    Command::Snowfall(snowfall)
-                }
-            };
-            settings.save();
-            send(app, command);
+            app.settings.accumulate = accumulate;
+            app.settings.save();
+            send(app, Command::Accumulate(accumulate));
+        }),
+        PanelAction::Melt(melt) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.melt = melt;
+            app.settings.save();
+            send(app, Command::Melt(melt));
+        }),
+        PanelAction::SnowOnWindows(on_windows) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.snow_on_windows = on_windows;
+            app.settings.save();
+            send(app, Command::SnowOnWindows(on_windows));
+        }),
+        PanelAction::BehindWindows(behind) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.behind_windows = behind;
+            app.settings.save();
+            send(app, Command::BehindWindows(behind));
+        }),
+        PanelAction::ShowInScreenshots(shots) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.show_in_screenshots = shots;
+            app.settings.save();
+            send(app, Command::ShowInScreenshots(shots));
         }),
     }
 }
 
+
 fn check_for_updates(window: HWND, asked: bool) {
     let target = window.0 as isize;
+    let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
+    if asked {
+        toast::show(
+            ToastState::Checking,
+            is_ru,
+            ToastCallbacks {
+                on_update: Box::new(move |url| {
+                    download_and_apply(window, url);
+                }),
+                on_close: Box::new(|| {}),
+            },
+        );
+    }
     thread::spawn(move || {
         let result = Box::new(update::check());
         unsafe {
@@ -404,45 +356,38 @@ fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, 
     let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
     match result {
         Ok(Some(release)) => {
-            let text = if is_ru {
-                format!(
-                    "Доступна новая версия Snowdrift {} (у вас установлена {current}).\n\nЗагрузить и обновить сейчас?",
-                    release.version
-                )
-            } else {
-                format!(
-                    "A new version of Snowdrift {} is available (you have {current}).\n\nDownload and update now?",
-                    release.version
-                )
-            };
-            if message(window, &text, MB_YESNO | MB_ICONINFORMATION) == IDYES {
-                notify(window, "Snowdrift", if is_ru { "Загрузка обновления в фоне…" } else { "Downloading update in background…" });
-                download_and_apply(window, release.url);
-            }
+            toast::show(
+                ToastState::Available { version: release.version.clone(), url: release.url.clone() },
+                is_ru,
+                ToastCallbacks {
+                    on_update: Box::new(move |url| {
+                        download_and_apply(window, url);
+                    }),
+                    on_close: Box::new(|| {}),
+                },
+            );
         }
         Ok(None) if asked => {
-            message(
-                window,
-                &if is_ru {
-                    format!("У вас установлена последняя версия Snowdrift ({current}).")
-                } else {
-                    format!("You have the latest version of Snowdrift ({current}).")
+            toast::show(
+                ToastState::UpToDate(current.to_string()),
+                is_ru,
+                ToastCallbacks {
+                    on_update: Box::new(|_| {}),
+                    on_close: Box::new(|| {}),
                 },
-                MB_OK | MB_ICONINFORMATION,
             );
         }
         Ok(None) => {}
         Err(error) => {
             log!("update check failed: {error}");
             if asked {
-                message(
-                    window,
-                    &if is_ru {
-                        format!("Не удалось проверить обновления.\n\n{error}")
-                    } else {
-                        format!("Failed to check for updates.\n\n{error}")
+                toast::show(
+                    ToastState::Error(error),
+                    is_ru,
+                    ToastCallbacks {
+                        on_update: Box::new(|_| {}),
+                        on_close: Box::new(|| {}),
                     },
-                    MB_OK | MB_ICONWARNING,
                 );
             }
         }
@@ -451,8 +396,26 @@ fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, 
 
 fn download_and_apply(window: HWND, url: String) {
     let target = window.0 as isize;
+    let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
+    toast::show(
+        ToastState::Downloading { percent: 0, downloaded: 0, total: 0 },
+        is_ru,
+        ToastCallbacks {
+            on_update: Box::new(|_| {}),
+            on_close: Box::new(|| {}),
+        },
+    );
+
     thread::spawn(move || {
-        let res = Box::new(update::download_installer(&url));
+        let progress = Box::new(move |read: u32, total: u32| {
+            let percent = if total > 0 { ((read as u64 * 100) / total as u64) as u32 } else { 0 };
+            let wp = percent as usize;
+            let lp = ((read / 1024) as isize) << 16 | ((total / 1024) as isize & 0xffff);
+            unsafe {
+                let _ = PostMessageW(Some(HWND(target as _)), WM_UPDATE_PROGRESS, WPARAM(wp), LPARAM(lp));
+            }
+        });
+        let res = Box::new(update::download_installer(&url, Some(progress)));
         unsafe {
             let _ = PostMessageW(
                 Some(HWND(target as _)),
@@ -465,41 +428,21 @@ fn download_and_apply(window: HWND, url: String) {
 }
 
 fn on_update_downloaded(window: HWND, result: std::result::Result<PathBuf, String>) {
-    let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
     match result {
         Ok(installer) => {
+            toast::update_state(ToastState::Downloaded);
             if let Err(error) = update::run_installer(&installer) {
-                message(
-                    window,
-                    &if is_ru {
-                        format!("Не удалось запустить установщик обновления:\n\n{error}")
-                    } else {
-                        format!("Failed to launch update installer:\n\n{error}")
-                    },
-                    MB_OK | MB_ICONERROR,
-                );
+                toast::update_state(ToastState::Error(error));
             } else {
                 quit(window);
             }
         }
         Err(error) => {
-            message(
-                window,
-                &if is_ru {
-                    format!("Не удалось загрузить обновление:\n\n{error}")
-                } else {
-                    format!("Failed to download update:\n\n{error}")
-                },
-                MB_OK | MB_ICONERROR,
-            );
+            toast::update_state(ToastState::Error(error));
         }
     }
 }
 
-fn message(window: HWND, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
-    let text: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    unsafe { MessageBoxW(Some(window), PCWSTR(text.as_ptr()), w!("Snowdrift"), style | MB_SETFOREGROUND | MB_TOPMOST) }
-}
 
 fn notify(window: HWND, title: &str, text: &str) {
     let mut data = NOTIFYICONDATAW {
@@ -522,6 +465,8 @@ fn notify(window: HWND, title: &str, text: &str) {
 }
 
 fn quit(window: HWND) {
+    panel::close();
+    toast::close();
     remove_tray_icon(window);
     if let Some(mut app) = APP.with_borrow_mut(Option::take) {
         send(&app, Command::Quit);
