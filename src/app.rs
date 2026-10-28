@@ -63,6 +63,9 @@ thread_local! {
 pub fn run() -> Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        if let Ok(exe) = std::env::current_exe() {
+            snowdrift::install::ensure_shortcuts(&exe);
+        }
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,

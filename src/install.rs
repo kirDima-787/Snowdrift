@@ -13,7 +13,7 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 use windows::Win32::UI::Shell::{
-    FOLDERID_LocalAppData, FOLDERID_Programs, FOLDERID_UserProgramFiles, IShellLinkW, KF_FLAG_CREATE, SHGetKnownFolderPath, ShellExecuteW, ShellLink,
+    FOLDERID_Desktop, FOLDERID_LocalAppData, FOLDERID_Programs, FOLDERID_UserProgramFiles, IShellLinkW, KF_FLAG_CREATE, SHGetKnownFolderPath, ShellExecuteW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW, WM_CLOSE,
@@ -51,9 +51,7 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    if let Some(programs) = known_folder(&FOLDERID_Programs) {
-        let _ = shortcut(&exe, &programs.join("Snowdrift.lnk"));
-    }
+    ensure_shortcuts(&exe);
     let quoted = format!("\"{}\"", exe.display());
     write_string(UNINSTALL, w!("DisplayName"), "Snowdrift");
     write_string(UNINSTALL, w!("DisplayVersion"), version);
@@ -76,6 +74,9 @@ pub fn uninstall() {
     close_running();
     if let Some(programs) = known_folder(&FOLDERID_Programs) {
         let _ = std::fs::remove_file(programs.join("Snowdrift.lnk"));
+    }
+    if let Some(desktop) = known_folder(&FOLDERID_Desktop) {
+        let _ = std::fs::remove_file(desktop.join("Snowdrift.lnk"));
     }
     if let Some(data) = known_folder(&FOLDERID_LocalAppData) {
         let _ = std::fs::remove_dir_all(data.join("Snowdrift"));
@@ -115,6 +116,15 @@ fn close_running() {
             }
             let _ = CloseHandle(handle);
         }
+    }
+}
+
+pub fn ensure_shortcuts(exe: &Path) {
+    if let Some(programs) = known_folder(&FOLDERID_Programs) {
+        let _ = shortcut(exe, &programs.join("Snowdrift.lnk"));
+    }
+    if let Some(desktop) = known_folder(&FOLDERID_Desktop) {
+        let _ = shortcut(exe, &desktop.join("Snowdrift.lnk"));
     }
 }
 

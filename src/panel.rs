@@ -1,4 +1,4 @@
-//! Native Windows 11 style bottom tray context menu (Liquid Glass Direct2D layered window).
+//! Native Windows 11 / Apple style bottom tray context menu (Liquid Glass Direct2D layered window).
 
 use std::cell::RefCell;
 use std::mem::size_of;
@@ -29,10 +29,10 @@ use snowdrift::card::Language;
 use snowdrift::simulation::Snowfall;
 
 const CLASS: PCWSTR = w!("SnowdriftPanel");
-const WIDTH: f32 = 240.0;
-const HEIGHT: f32 = 380.0;
+const WIDTH: f32 = 236.0;
+const HEIGHT: f32 = 343.0;
 const MARGIN: f32 = 16.0;
-const ROW_H: f32 = 32.0;
+const ROW_H: f32 = 29.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 pub enum PanelAction {
@@ -186,13 +186,13 @@ impl PanelWindow {
     fn build_rows(&mut self) {
         let card_left = MARGIN;
         let card_top = MARGIN;
-        let mut y = card_top + 6.0;
+        let mut y = card_top + 5.0;
 
         self.rows.clear();
         let row_w = WIDTH - 8.0;
         let rx = card_left + 4.0;
 
-        // Group 1: Snow simulation controls
+        // Group 1: Snow simulation controls (5 items)
         let kinds_group1 = [
             RowKind::Snowfall,
             RowKind::Accumulate,
@@ -208,8 +208,8 @@ impl PanelWindow {
             y += ROW_H;
         }
 
-        y += 8.0; // Separator space
-        // Group 2: Window / display settings
+        y += 7.0; // Separator space
+        // Group 2: Window / display settings (3 items)
         let kinds_group2 = [
             RowKind::BehindWindows,
             RowKind::ShowInScreenshots,
@@ -223,8 +223,8 @@ impl PanelWindow {
             y += ROW_H;
         }
 
-        y += 8.0; // Separator space
-        // Group 3: App lifecycle
+        y += 7.0; // Separator space
+        // Group 3: App lifecycle (3 items)
         let kinds_group3 = [
             RowKind::Language,
             RowKind::CheckUpdates,
@@ -273,68 +273,66 @@ impl PanelWindow {
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
 
         unsafe {
-            // Windows 11 style smooth ambient drop shadow (14 passes with quadratic falloff)
-            for step in 0..14 {
-                let factor = 1.0 - (step as f32 / 14.0);
-                let alpha = 0.030 * (factor * factor);
+            // Windows 11 / Apple macOS ambient shadow (12 soft passes)
+            for step in 0..12 {
+                let factor = 1.0 - (step as f32 / 12.0);
+                let alpha = 0.032 * (factor * factor);
                 let spread = (step as f32 + 1.0) * 1.15;
                 let rect = D2D_RECT_F {
                     left: card.left - spread,
-                    top: card.top - spread + 3.0,
+                    top: card.top - spread + 2.0,
                     right: card.right + spread,
-                    bottom: card.bottom + spread + 3.0,
+                    bottom: card.bottom + spread + 2.0,
                 };
                 if let Ok(shade) = brush([0.0, 0.0, 0.0], alpha) {
-                    target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 8.0 + spread, radiusY: 8.0 + spread }, &shade);
+                    target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 10.0 + spread, radiusY: 10.0 + spread }, &shade);
                 }
             }
 
-            // Liquid glass body: translucent dark acrylic fill (#161618 at 0.84 alpha)
-            let shape = D2D1_ROUNDED_RECT { rect: card, radiusX: 8.0, radiusY: 8.0 };
-            if let Ok(bg) = brush([0.09, 0.09, 0.11], 0.84) {
+            // Apple & WindBet dark obsidian liquid glass acrylic fill
+            // Deep obsidian navy #0f1626 / rgb(15, 22, 38) at 0.95 opacity
+            let shape = D2D1_ROUNDED_RECT { rect: card, radiusX: 10.0, radiusY: 10.0 };
+            if let Ok(bg) = brush([0.06, 0.09, 0.15], 0.95) {
                 target.FillRoundedRectangle(&shape, &bg);
             }
 
-            // Liquid glass top sheen (specular vertical reflection in the top 35%)
-            let sheen_rect = D2D_RECT_F {
-                left: card.left,
-                top: card.top,
-                right: card.right,
-                bottom: card.top + HEIGHT * 0.35,
-            };
-            if let Ok(sheen) = brush([1.0, 1.0, 1.0], 0.04) {
-                target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: sheen_rect, radiusX: 8.0, radiusY: 8.0 }, &sheen);
+            // Subtle specular glass border: 1px rgba(255, 255, 255, 0.12)
+            if let Ok(border) = brush([1.0, 1.0, 1.0], 0.12) {
+                target.DrawRoundedRectangle(&shape, &border, 1.0, None);
             }
 
-            // Liquid glass gradient specular border
-            let border_top = brush([1.0, 1.0, 1.0], 0.18);
-            let border_mid = brush([1.0, 1.0, 1.0], 0.09);
-            if let (Ok(bt), Ok(bm)) = (border_top, border_mid) {
-                target.DrawRoundedRectangle(&shape, &bm, 1.0, None);
-                let top_shape = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F { left: card.left, top: card.top, right: card.right, bottom: card.top + 8.0 },
-                    radiusX: 8.0,
-                    radiusY: 8.0,
-                };
-                target.DrawRoundedRectangle(&top_shape, &bt, 1.0, None);
+            // Apple macOS glass specular refraction hairline on the top edge
+            if let Ok(sheen) = brush([1.0, 1.0, 1.0], 0.22) {
+                target.DrawLine(
+                    Vector2 { X: card.left + 12.0, Y: card.top + 1.0 },
+                    Vector2 { X: card.right - 12.0, Y: card.top + 1.0 },
+                    &sheen,
+                    1.0,
+                    None,
+                );
             }
 
             // Draw items
             for row in &self.rows {
                 let is_hovered = self.hovered == Some(row.kind);
                 if is_hovered {
-                    // Liquid glass hover highlight pill (inset by 4px, height 28px)
                     let item_rect = D2D_RECT_F {
-                        left: row.rect.left + 4.0,
-                        top: row.rect.top + 2.0,
-                        right: row.rect.right - 4.0,
-                        bottom: row.rect.bottom - 2.0,
+                        left: card.left + 4.0,
+                        top: row.rect.top + 1.0,
+                        right: card.right - 4.0,
+                        bottom: row.rect.bottom - 1.0,
                     };
-                    if let Ok(hover_b) = brush([1.0, 1.0, 1.0], 0.09) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 4.0, radiusY: 4.0 }, &hover_b);
+                    let (fill_col, fill_alpha, border_col, border_alpha) = if row.kind == RowKind::Quit {
+                        ([0.94, 0.27, 0.27], 0.18, [0.94, 0.27, 0.27], 0.28)
+                    } else {
+                        // WindBet electric blue subtle glow on hover
+                        ([0.15, 0.39, 0.92], 0.22, [0.22, 0.74, 0.97], 0.24)
+                    };
+                    if let Ok(hover_b) = brush(fill_col, fill_alpha) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 5.0, radiusY: 5.0 }, &hover_b);
                     }
-                    if let Ok(hover_border) = brush([1.0, 1.0, 1.0], 0.07) {
-                        target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 4.0, radiusY: 4.0 }, &hover_border, 1.0, None);
+                    if let Ok(hover_border) = brush(border_col, border_alpha) {
+                        target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 5.0, radiusY: 5.0 }, &hover_border, 1.0, None);
                     }
                 }
 
@@ -342,16 +340,16 @@ impl PanelWindow {
                 self.draw_left_icon(target, row.kind, row.rect, is_hovered);
 
                 // Item label: clean Windows 11 typography
-                let text_x = row.rect.left + 36.0;
-                let text_y = row.rect.top + 7.5;
+                let text_x = card.left + 35.0;
+                let text_y = row.rect.top + 6.5;
                 let label = self.row_label(row.kind);
-                if let Ok(lbl_layout) = self.text_layout(&label, 12.5, WIDTH - 48.0) {
+                if let Ok(lbl_layout) = self.text_layout(&label, 12.0, WIDTH - 46.0) {
                     let col = if row.kind == RowKind::Quit && is_hovered {
-                        [1.0, 0.42, 0.42]
+                        [1.0, 0.45, 0.45]
                     } else if is_hovered {
                         [1.0, 1.0, 1.0]
                     } else {
-                        [0.88, 0.88, 0.90]
+                        [0.91, 0.92, 0.95]
                     };
                     if let Ok(lbl_b) = brush(col, 1.0) {
                         target.DrawTextLayout(Vector2 { X: text_x, Y: text_y }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
@@ -359,62 +357,66 @@ impl PanelWindow {
                 }
             }
 
-            // Group separators: thin 1px subtle lines exactly like native Windows 11 menus
+            // Group separators: thin 1px subtle lines exactly like native WindBet / Apple menus
             if let Ok(sep) = brush([1.0, 1.0, 1.0], 0.08) {
-                let sep1_y = card.top + 6.0 + (ROW_H * 5.0) + 4.0;
-                target.DrawLine(Vector2 { X: card.left + 10.0, Y: sep1_y }, Vector2 { X: card.right - 10.0, Y: sep1_y }, &sep, 1.0, None);
+                let sep1_y = card.top + 5.0 + (ROW_H * 5.0) + 3.5;
+                target.DrawLine(Vector2 { X: card.left + 8.0, Y: sep1_y }, Vector2 { X: card.right - 8.0, Y: sep1_y }, &sep, 1.0, None);
 
-                let sep2_y = sep1_y + 8.0 + (ROW_H * 3.0);
-                target.DrawLine(Vector2 { X: card.left + 10.0, Y: sep2_y }, Vector2 { X: card.right - 10.0, Y: sep2_y }, &sep, 1.0, None);
+                let sep2_y = sep1_y + 7.0 + (ROW_H * 3.0);
+                target.DrawLine(Vector2 { X: card.left + 8.0, Y: sep2_y }, Vector2 { X: card.right - 8.0, Y: sep2_y }, &sep, 1.0, None);
             }
         }
     }
 
     fn draw_left_icon(&self, target: &ID2D1RenderTarget, kind: RowKind, row_rect: D2D_RECT_F, is_hovered: bool) {
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
-        let cx = row_rect.left + 16.0;
-        let cy = row_rect.top + (row_rect.bottom - row_rect.top) / 2.0;
+        let cx = MARGIN + 18.0;
+        let cy = row_rect.top + ROW_H / 2.0;
 
         let col = if kind == RowKind::Quit && is_hovered {
-            [1.0, 0.42, 0.42]
+            [1.0, 0.45, 0.45]
         } else if is_hovered {
             [1.0, 1.0, 1.0]
         } else {
-            [0.86, 0.88, 0.92]
+            [0.85, 0.88, 0.92]
         };
         let alpha = if is_hovered { 1.0 } else { 0.90 };
         let Ok(b) = brush(col, alpha) else { return };
 
+        // For checkmarks, bright WindBet cyan-white accent
+        let check_col = if is_hovered { [1.0, 1.0, 1.0] } else { [0.40, 0.76, 1.0] };
+        let Ok(check_b) = brush(check_col, 1.0) else { return };
+
         match kind {
-            // Checkable toggle options: native Windows 11 checkmark ON THE LEFT when active
+            // Checkable toggle options: native checkmark ON THE LEFT when active
             RowKind::Accumulate => {
                 if self.settings.accumulate {
-                    self.draw_vector_checkmark(target, &b, cx, cy);
+                    self.draw_vector_checkmark(target, &check_b, cx, cy);
                 }
             }
             RowKind::Melt => {
                 if self.settings.melt && self.settings.accumulate {
-                    self.draw_vector_checkmark(target, &b, cx, cy);
+                    self.draw_vector_checkmark(target, &check_b, cx, cy);
                 }
             }
             RowKind::SnowOnWindows => {
                 if self.settings.snow_on_windows {
-                    self.draw_vector_checkmark(target, &b, cx, cy);
+                    self.draw_vector_checkmark(target, &check_b, cx, cy);
                 }
             }
             RowKind::BehindWindows => {
                 if self.settings.behind_windows {
-                    self.draw_vector_checkmark(target, &b, cx, cy);
+                    self.draw_vector_checkmark(target, &check_b, cx, cy);
                 }
             }
             RowKind::ShowInScreenshots => {
                 if self.settings.show_in_screenshots {
-                    self.draw_vector_checkmark(target, &b, cx, cy);
+                    self.draw_vector_checkmark(target, &check_b, cx, cy);
                 }
             }
             RowKind::OpenAtLogin => {
                 if self.login {
-                    self.draw_vector_checkmark(target, &b, cx, cy);
+                    self.draw_vector_checkmark(target, &check_b, cx, cy);
                 }
             }
             // Action items: precision vector icon pack
@@ -439,17 +441,17 @@ impl PanelWindow {
     fn draw_vector_checkmark(&self, target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, cx: f32, cy: f32) {
         unsafe {
             target.DrawLine(
-                Vector2 { X: cx - 4.5, Y: cy + 0.5 },
-                Vector2 { X: cx - 1.5, Y: cy + 3.8 },
+                Vector2 { X: cx - 4.5, Y: cy },
+                Vector2 { X: cx - 1.2, Y: cy + 3.5 },
                 brush,
-                1.7,
+                1.8,
                 None,
             );
             target.DrawLine(
-                Vector2 { X: cx - 1.5, Y: cy + 3.8 },
-                Vector2 { X: cx + 4.5, Y: cy - 3.5 },
+                Vector2 { X: cx - 1.2, Y: cy + 3.5 },
+                Vector2 { X: cx + 4.5, Y: cy - 3.2 },
                 brush,
-                1.7,
+                1.8,
                 None,
             );
         }
@@ -457,13 +459,13 @@ impl PanelWindow {
 
     fn draw_vector_snowflake(&self, target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, cx: f32, cy: f32) {
         unsafe {
-            let r = 5.5f32;
+            let r = 5.2f32;
             for a in [0.0f32, 1.0472f32, 2.0944f32] {
                 let dx = a.sin() * r;
                 let dy = a.cos() * r;
                 target.DrawLine(Vector2 { X: cx - dx, Y: cy - dy }, Vector2 { X: cx + dx, Y: cy + dy }, brush, 1.3, None);
-                let bdx = (a + 0.6).sin() * 2.0;
-                let bdy = (a + 0.6).cos() * 2.0;
+                let bdx = (a + 0.6).sin() * 1.8;
+                let bdy = (a + 0.6).cos() * 1.8;
                 target.DrawLine(Vector2 { X: cx + dx * 0.6, Y: cy + dy * 0.6 }, Vector2 { X: cx + dx * 0.6 + bdx, Y: cy + dy * 0.6 + bdy }, brush, 1.1, None);
                 target.DrawLine(Vector2 { X: cx - dx * 0.6, Y: cy - dy * 0.6 }, Vector2 { X: cx - dx * 0.6 - bdx, Y: cy - dy * 0.6 - bdy }, brush, 1.1, None);
             }
@@ -472,16 +474,16 @@ impl PanelWindow {
 
     fn draw_vector_broom(&self, target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, cx: f32, cy: f32) {
         unsafe {
-            target.DrawLine(Vector2 { X: cx + 4.5, Y: cy - 5.5 }, Vector2 { X: cx - 1.0, Y: cy + 0.5 }, brush, 1.6, None);
-            target.DrawLine(Vector2 { X: cx - 1.0, Y: cy + 0.5 }, Vector2 { X: cx - 5.5, Y: cy + 3.5 }, brush, 1.4, None);
-            target.DrawLine(Vector2 { X: cx - 1.0, Y: cy + 0.5 }, Vector2 { X: cx - 4.0, Y: cy + 5.5 }, brush, 1.4, None);
-            target.DrawLine(Vector2 { X: cx - 1.0, Y: cy + 0.5 }, Vector2 { X: cx - 1.5, Y: cy + 6.0 }, brush, 1.4, None);
+            target.DrawLine(Vector2 { X: cx + 4.0, Y: cy - 5.0 }, Vector2 { X: cx - 1.0, Y: cy + 0.5 }, brush, 1.6, None);
+            target.DrawLine(Vector2 { X: cx - 1.0, Y: cy + 0.5 }, Vector2 { X: cx - 5.0, Y: cy + 3.5 }, brush, 1.4, None);
+            target.DrawLine(Vector2 { X: cx - 1.0, Y: cy + 0.5 }, Vector2 { X: cx - 3.5, Y: cy + 5.0 }, brush, 1.4, None);
+            target.DrawLine(Vector2 { X: cx - 1.0, Y: cy + 0.5 }, Vector2 { X: cx - 1.5, Y: cy + 5.5 }, brush, 1.4, None);
         }
     }
 
     fn draw_vector_globe(&self, target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, cx: f32, cy: f32) {
         unsafe {
-            let r = 5.5f32;
+            let r = 5.2f32;
             target.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r, radiusY: r }, brush, 1.3, None);
             target.DrawLine(Vector2 { X: cx - r, Y: cy }, Vector2 { X: cx + r, Y: cy }, brush, 1.1, None);
             target.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r * 0.45, radiusY: r }, brush, 1.1, None);
@@ -490,7 +492,7 @@ impl PanelWindow {
 
     fn draw_vector_sync(&self, target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, cx: f32, cy: f32) {
         unsafe {
-            let r = 5.0f32;
+            let r = 4.8f32;
             target.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r, radiusY: r }, brush, 1.3, None);
             target.DrawLine(Vector2 { X: cx + r - 1.0, Y: cy - 2.0 }, Vector2 { X: cx + r + 2.0, Y: cy + 1.0 }, brush, 1.3, None);
             target.DrawLine(Vector2 { X: cx + r + 2.0, Y: cy + 1.0 }, Vector2 { X: cx + r - 2.5, Y: cy + 2.0 }, brush, 1.3, None);
@@ -499,7 +501,7 @@ impl PanelWindow {
 
     fn draw_vector_exit(&self, target: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, cx: f32, cy: f32) {
         unsafe {
-            let arm = 4.0f32;
+            let arm = 3.8f32;
             target.DrawLine(Vector2 { X: cx - arm, Y: cy - arm }, Vector2 { X: cx + arm, Y: cy + arm }, brush, 1.5, None);
             target.DrawLine(Vector2 { X: cx - arm, Y: cy + arm }, Vector2 { X: cx + arm, Y: cy - arm }, brush, 1.5, None);
         }
@@ -754,8 +756,8 @@ fn placement(at: POINT, width: f32, height: f32) -> (f32, POINT) {
         let card_x = (cursor.x - card_w / 2).clamp(work.left + 8, work.right - card_w - 8);
         let win_x = card_x - (MARGIN * scale) as i32;
 
-        // Vertically: snug 10px above taskbar
-        let card_y = work.bottom - (10.0 * scale) as i32 - card_h;
+        // Vertically: snug 4px above the taskbar
+        let card_y = work.bottom - (4.0 * scale) as i32 - card_h;
         let win_y = (card_y - (MARGIN * scale) as i32).max(work.top + 8);
 
         (scale, POINT { x: win_x, y: win_y })

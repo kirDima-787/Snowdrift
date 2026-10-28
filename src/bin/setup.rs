@@ -134,9 +134,9 @@ fn paint(card: &Card, stage: &Stage, installed: Option<&str>, pressed: bool, lan
             ("SNOWDRIFT", body, if installing { if is_ru { "УСТАНОВКА…" } else { "INSTALLING…" } } else { button })
         }
         Stage::Done(_) => if is_ru {
-            ("СНЕГОПАД ГОТОВ.", "Snowdrift установлен. Вы найдёте его в меню «Пуск».".to_string(), "ОТКРЫТЬ SNOWDRIFT")
+            ("СНЕГОПАД ГОТОВ.", "Snowdrift установлен. Вы найдёте его на рабочем столе и в меню «Пуск».".to_string(), "ОТКРЫТЬ SNOWDRIFT")
         } else {
-            ("LET IT SETTLE.", "Snowdrift is installed. You'll find it in the Start menu.".to_string(), "OPEN SNOWDRIFT")
+            ("LET IT SETTLE.", "Snowdrift is installed. You'll find it on your Desktop and in the Start menu.".to_string(), "OPEN SNOWDRIFT")
         },
         Stage::Failed(error) => if is_ru {
             ("SNOWDRIFT", format!("Не удалось установить: {error}."), "ПОВТОРИТЬ")
