@@ -6,9 +6,9 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
+use x11rb::protocol::shape;
 use x11rb::protocol::xfixes;
 use x11rb::protocol::xproto::*;
-use x11rb::wrapper::ConnectionExt as _;
 
 use snowdrift::geometry::{Rect, V2};
 use snowdrift::simulation::{SnowSimulation, Snowfall, Sprite, WindowSurface};
@@ -78,7 +78,7 @@ pub fn run() {
     // Set click-through via XFixes input shape: clicks fall straight through to windows below
     if let Ok(region) = conn.generate_id() {
         let _ = xfixes::create_region(&conn, region, &[]);
-        let _ = xfixes::set_window_shape_region(&conn, window, shape::SK::INPUT.into(), 0, 0, region);
+        let _ = xfixes::set_window_shape_region(&conn, window, shape::SK::INPUT, 0, 0, region);
         let _ = xfixes::destroy_region(&conn, region);
     }
 
@@ -130,12 +130,12 @@ pub fn run() {
                             if geom.width > 50 && geom.height > 50 {
                                 surfaces.push(WindowSurface {
                                     id: child as isize,
-                                    frame: Rect::new(
-                                        geom.x as f32,
-                                        geom.y as f32,
-                                        geom.width as f32,
-                                        geom.height as f32,
-                                    ),
+                                    frame: Rect {
+                                        x: geom.x as f32,
+                                        y: geom.y as f32,
+                                        width: geom.width as f32,
+                                        height: geom.height as f32,
+                                    },
                                     blockers: Vec::new(),
                                     corner_radius: 8.0,
                                     corner_exponent: 2.0,

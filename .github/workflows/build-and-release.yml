@@ -75,7 +75,7 @@ jobs:
         shell: pwsh
         run: |
           cargo build --release --bin Snowdrift
-          $env:SNOWDRIFT_APP = "target/release/Snowdrift.exe"
+          $env:SNOWDRIFT_APP = (Resolve-Path "target/release/Snowdrift.exe").Path
           cargo build --release --features setup --bin Snowdrift-Setup
 
       - name: Upload Windows binaries to Release
