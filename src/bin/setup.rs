@@ -12,7 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
 
-use snowdrift::card::{self, Card, Content, Hits};
+use snowdrift::card::{self, Card, Content, Hits, Language};
 use snowdrift::install;
 
 /// The app this installer carries, built before it.
@@ -35,6 +35,7 @@ struct Setup {
     hits: Hits,
     stage: Stage,
     installed: Option<String>,
+    language: Language,
     pressed: bool,
     holding: bool,
 }
@@ -47,7 +48,11 @@ fn main() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
-    if std::env::args().skip(1).any(|argument| argument.eq_ignore_ascii_case("--silent") || argument.eq_ignore_ascii_case("/s") || argument.eq_ignore_ascii_case("--update")) {
+    if std::env::args().skip(1).any(|argument| {
+        argument.eq_ignore_ascii_case("--silent")
+            || argument.eq_ignore_ascii_case("/s")
+            || argument.eq_ignore_ascii_case("--update")
+    }) {
         let code = match install::install(APP, VERSION) {
             Ok(exe) => {
                 install::launch(&exe);
@@ -58,7 +63,6 @@ fn main() {
         std::process::exit(code);
     }
     if open().is_err() {
-        // Without the card, fall back to installing and opening the app, which is what the card would lead to.
         if let Ok(exe) = install::install(APP, VERSION) {
             install::launch(&exe);
         }
@@ -78,7 +82,8 @@ fn open() -> Result<()> {
     let (scale, origin) = card::placement(WIDTH, HEIGHT);
     let card = Card::new(WIDTH, HEIGHT, scale)?;
     let installed = install::installed_version();
-    let (pixels, hits) = paint(&card, &Stage::Ready, installed.as_deref(), false)?;
+    let language = Language::default_system();
+    let (pixels, hits) = paint(&card, &Stage::Ready, installed.as_deref(), false, language)?;
     unsafe {
         let window = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_APPWINDOW,
@@ -95,7 +100,7 @@ fn open() -> Result<()> {
             None,
         )?;
         card::present(window, card.size, &pixels, Some(origin));
-        SETUP.set(Some(Setup { window, card, hits, stage: Stage::Ready, installed, pressed: false, holding: false }));
+        SETUP.set(Some(Setup { window, card, hits, stage: Stage::Ready, installed, language, pressed: false, holding: false }));
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetForegroundWindow(window);
     }
@@ -103,23 +108,52 @@ fn open() -> Result<()> {
 }
 
 /// The card for a stage of the installation.
-fn paint(card: &Card, stage: &Stage, installed: Option<&str>, pressed: bool) -> Result<(Vec<u8>, Hits)> {
+fn paint(card: &Card, stage: &Stage, installed: Option<&str>, pressed: bool, language: Language) -> Result<(Vec<u8>, Hits)> {
+    let is_ru = language.is_ru();
+    let lang_toggle = Some(if is_ru { "EN" } else { "RU" });
     let installing = matches!(stage, Stage::Installing);
     let (title, body, button) = match stage {
         Stage::Ready | Stage::Installing => {
             let (body, button) = match installed {
-                None => (format!("Version {VERSION}. Installs just for you, without administrator rights."), "INSTALL"),
-                Some(old) if snowdrift::version::newer(VERSION, old) => {
+                None => if is_ru {
+                    (format!("Версия {VERSION}. Устанавливается только для вас, без прав администратора."), "УСТАНОВИТЬ")
+                } else {
+                    (format!("Version {VERSION}. Installs just for you, without administrator rights."), "INSTALL")
+                },
+                Some(old) if snowdrift::version::newer(VERSION, old) => if is_ru {
+                    (format!("Обновляет Snowdrift {old} до {VERSION}. Ваши настройки сохраняются."), "ОБНОВИТЬ")
+                } else {
                     (format!("Updates Snowdrift {old} to {VERSION}. Your settings stay as they are."), "UPDATE")
-                }
-                Some(old) => (format!("Snowdrift {old} is already here. Installing {VERSION} again repairs it."), "REINSTALL"),
+                },
+                Some(old) => if is_ru {
+                    (format!("Snowdrift {old} уже установлен. Повторная установка восстановит файлы."), "ПЕРЕУСТАНОВИТЬ")
+                } else {
+                    (format!("Snowdrift {old} is already here. Installing {VERSION} again repairs it."), "REINSTALL")
+                },
             };
-            ("SNOWDRIFT", body, if installing { "INSTALLING…" } else { button })
+            ("SNOWDRIFT", body, if installing { if is_ru { "УСТАНОВКА…" } else { "INSTALLING…" } } else { button })
         }
-        Stage::Done(_) => ("LET IT SETTLE.", "Snowdrift is installed. You'll find it in the Start menu.".to_string(), "OPEN SNOWDRIFT"),
-        Stage::Failed(error) => ("SNOWDRIFT", format!("Couldn't install: {error}."), "TRY AGAIN"),
+        Stage::Done(_) => if is_ru {
+            ("СНЕГОПАД ГОТОВ.", "Snowdrift установлен. Вы найдёте его в меню «Пуск».".to_string(), "ОТКРЫТЬ SNOWDRIFT")
+        } else {
+            ("LET IT SETTLE.", "Snowdrift is installed. You'll find it in the Start menu.".to_string(), "OPEN SNOWDRIFT")
+        },
+        Stage::Failed(error) => if is_ru {
+            ("SNOWDRIFT", format!("Не удалось установить: {error}."), "ПОВТОРИТЬ")
+        } else {
+            ("SNOWDRIFT", format!("Couldn't install: {error}."), "TRY AGAIN")
+        },
     };
-    card.paint(&Content { icon: 96.0, title, title_size: 40.0, body: &body, button, pressed: pressed || installing, closable: !installing })
+    card.paint(&Content {
+        icon: 96.0,
+        title,
+        title_size: 40.0,
+        body: &body,
+        button,
+        pressed: pressed || installing,
+        closable: !installing,
+        lang_toggle,
+    })
 }
 
 unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -133,7 +167,9 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             let inside = SETUP.with_borrow(|setup| {
                 setup.as_ref().map(|setup| {
                     let at = setup.card.dips(POINT { x: point.x - origin.left, y: point.y - origin.top });
-                    card::contains(&setup.hits.button, at) || setup.hits.close.is_some_and(|close| card::contains(&close, at))
+                    card::contains(&setup.hits.button, at)
+                        || setup.hits.close.is_some_and(|close| card::contains(&close, at))
+                        || setup.hits.lang.is_some_and(|lang| card::contains(&lang, at))
                 })
             });
             // The card drags the window anywhere but on its controls.
@@ -156,6 +192,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
                 match action {
                     Some(Action::Button) => act(),
                     Some(Action::Close) => close(),
+                    Some(Action::ToggleLanguage) => toggle_language(),
                     None => {}
                 }
             }
@@ -184,22 +221,26 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
 enum Action {
     Button,
     Close,
+    ToggleLanguage,
 }
 
 impl Setup {
-    /// Tracks a press on the button or the close mark: what was clicked, and the card redrawn if the button's look changed.
+    /// Tracks a press on the button, close mark, or language toggle.
     fn press(&mut self, message: u32, point: POINT) -> (Option<Action>, Option<Vec<u8>>) {
         let at = self.card.dips(point);
         let on_button = card::contains(&self.hits.button, at);
         let on_close = self.hits.close.is_some_and(|close| card::contains(&close, at));
+        let on_lang = self.hits.lang.is_some_and(|lang| card::contains(&lang, at));
         let mut action = None;
         match message {
-            WM_LBUTTONDOWN => self.holding = on_button,
+            WM_LBUTTONDOWN => self.holding = on_button || on_lang,
             WM_LBUTTONUP => {
                 if self.holding && on_button {
                     action = Some(Action::Button);
                 } else if on_close {
                     action = Some(Action::Close);
+                } else if self.holding && on_lang {
+                    action = Some(Action::ToggleLanguage);
                 }
                 self.holding = false;
             }
@@ -215,7 +256,7 @@ impl Setup {
     }
 
     fn repaint(&mut self) -> Option<Vec<u8>> {
-        let (pixels, hits) = paint(&self.card, &self.stage, self.installed.as_deref(), self.pressed).ok()?;
+        let (pixels, hits) = paint(&self.card, &self.stage, self.installed.as_deref(), self.pressed, self.language).ok()?;
         self.hits = hits;
         Some(pixels)
     }
@@ -224,6 +265,16 @@ impl Setup {
 fn show(pixels: &[u8]) {
     if let Some((window, size)) = SETUP.with_borrow(|setup| setup.as_ref().map(|setup| (setup.window, setup.card.size))) {
         card::present(window, size, pixels, None);
+    }
+}
+
+fn toggle_language() {
+    if let Some(pixels) = SETUP.with_borrow_mut(|setup| {
+        let setup = setup.as_mut()?;
+        setup.language = setup.language.toggle();
+        setup.repaint()
+    }) {
+        show(&pixels);
     }
 }
 

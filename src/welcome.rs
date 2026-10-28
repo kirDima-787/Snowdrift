@@ -18,7 +18,9 @@ const CLASS: PCWSTR = w!("SnowdriftWelcome");
 const WIDTH: f32 = 440.0;
 const HEIGHT: f32 = 430.0;
 const TITLE: &str = "IT'S SNOWING\nON YOUR DESKTOP.";
+const TITLE_RU: &str = "СНЕГОПАД НА ВАШЕМ\nРАБОЧЕМ СТОЛЕ.";
 const BODY: &str = "Snowdrift lives in the system tray. Click its icon to change the snowfall, let the drift melt, or keep the snow off your windows. Sweep it aside with your cursor.";
+const BODY_RU: &str = "Snowdrift живёт в системном трее. Нажмите на значок, чтобы настроить снегопад, включить таяние сугробов или убрать снег с окон. Смахивайте снежинки курсором мыши.";
 /// Spacing of the pieces that fly off.
 const CELL: f32 = 6.0;
 /// Spacing of the crumbling front: fine enough that its edge reads as a line, not as squares.
@@ -47,6 +49,7 @@ struct Welcome {
     pressed: bool,
     /// The mouse went down on the button and hasn't come up yet.
     holding: bool,
+    is_ru: bool,
     crumble: Option<Crumble>,
 }
 
@@ -79,10 +82,10 @@ struct Crumble {
 
 /// Shown on first launch. Getting started crumbles the window into snow that falls onto the desktop.
 /// If the window can't be drawn, the snowfall just starts.
-pub fn show(handlers: Handlers) {
+pub fn show(handlers: Handlers, is_ru: bool) {
     let handlers = Rc::new(handlers);
     HANDLERS.set(Some(handlers.clone()));
-    if let Err(error) = open() {
+    if let Err(error) = open(is_ru) {
         log!("welcome failed: {error}");
         HANDLERS.set(None);
         (handlers.skipped)();
@@ -90,14 +93,14 @@ pub fn show(handlers: Handlers) {
     }
 }
 
-fn open() -> Result<()> {
+fn open(is_ru: bool) -> Result<()> {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
         let _ = card::register(CLASS, Some(procedure));
     });
     let (scale, origin) = card::placement(WIDTH, HEIGHT);
     let card = Card::new(WIDTH, HEIGHT, scale)?;
-    let (pixels, hits) = card.paint(&content(false))?;
+    let (pixels, hits) = card.paint(&make_content(false, is_ru))?;
     unsafe {
         let window = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -114,15 +117,37 @@ fn open() -> Result<()> {
             None,
         )?;
         card::present(window, card.size, &pixels, Some(origin));
-        WELCOME.set(Some(Welcome { window, card, hits, pressed: false, holding: false, crumble: None }));
+        WELCOME.set(Some(Welcome { window, card, hits, pressed: false, holding: false, is_ru, crumble: None }));
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetForegroundWindow(window);
     }
     Ok(())
 }
 
-fn content(pressed: bool) -> Content<'static> {
-    Content { icon: 112.0, title: TITLE, title_size: 34.0, body: BODY, button: "GET STARTED", pressed, closable: false }
+fn make_content(pressed: bool, is_ru: bool) -> Content<'static> {
+    if is_ru {
+        Content {
+            icon: 112.0,
+            title: TITLE_RU,
+            title_size: 32.0,
+            body: BODY_RU,
+            button: "ПУСТЬ ИДЁТ СНЕГ",
+            pressed,
+            closable: false,
+            lang_toggle: None,
+        }
+    } else {
+        Content {
+            icon: 112.0,
+            title: TITLE,
+            title_size: 34.0,
+            body: BODY,
+            button: "GET STARTED",
+            pressed,
+            closable: false,
+            lang_toggle: None,
+        }
+    }
 }
 
 unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -178,7 +203,7 @@ fn get_started() {
             return None;
         }
         welcome.pressed = false;
-        let (base, _) = welcome.card.paint(&content(false)).ok()?;
+        let (base, _) = welcome.card.paint(&welcome.content(false)).ok()?;
         let mut rect = RECT::default();
         unsafe { GetWindowRect(welcome.window, &mut rect).ok()? };
         welcome.crumble = Some(Crumble::new(base, welcome.card.size, welcome.card.scale, POINT { x: rect.left, y: rect.top }));
@@ -229,6 +254,10 @@ fn finish(skipped: bool) {
 }
 
 impl Welcome {
+    fn content(&self, pressed: bool) -> Content<'static> {
+        make_content(pressed, self.is_ru)
+    }
+
     /// Whether a point, in screen pixels or the window's own, is on the button; `false` elsewhere on the card.
     fn over_button(&self, point: POINT, screen: bool) -> bool {
         let mut origin = RECT::default();
@@ -258,7 +287,7 @@ impl Welcome {
             return (clicked, None);
         }
         self.pressed = pressed;
-        (clicked, self.card.paint(&content(pressed)).ok().map(|(pixels, _)| pixels))
+        (clicked, self.card.paint(&self.content(pressed)).ok().map(|(pixels, _)| pixels))
     }
 }
 

@@ -8,6 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM
 use windows::core::{BOOL, PCWSTR, w};
 
 use snowdrift::simulation::Snowfall;
+use snowdrift::card::Language;
 
 const KEY: PCWSTR = w!("Software\\Snowdrift");
 const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -22,12 +23,16 @@ pub struct Settings {
     pub behind_windows: bool,
     pub show_in_screenshots: bool,
     pub welcomed: bool,
+    pub language: Language,
 }
 
 impl Settings {
     pub fn load() -> Settings {
         let calm = !animations_enabled();
         let snowfall = read(w!("snowfall")).and_then(|i| Snowfall::ALL.get(i as usize).copied());
+        let language = read(w!("language"))
+            .map(|v| if v == 1 { Language::Ru } else { Language::En })
+            .unwrap_or_else(Language::default_system);
         Settings {
             snowfall: snowfall.unwrap_or(if calm { Snowfall::Light } else { Snowfall::Steady }),
             accumulate: read(w!("accumulate")).is_none_or(|v| v != 0),
@@ -36,6 +41,7 @@ impl Settings {
             behind_windows: read(w!("behindWindows")).is_some_and(|v| v != 0),
             show_in_screenshots: read(w!("showInScreenshots")).is_some_and(|v| v != 0),
             welcomed: read(w!("welcomed")).is_some_and(|v| v != 0),
+            language,
         }
     }
 
@@ -48,6 +54,7 @@ impl Settings {
         write(w!("behindWindows"), self.behind_windows as u32);
         write(w!("showInScreenshots"), self.show_in_screenshots as u32);
         write(w!("welcomed"), self.welcomed as u32);
+        write(w!("language"), match self.language { Language::En => 0, Language::Ru => 1 });
     }
 }
 

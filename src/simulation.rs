@@ -67,6 +67,16 @@ impl Snowfall {
         }
     }
 
+    pub fn title_ru(self) -> &'static str {
+        match self {
+            Snowfall::Off => "Выкл",
+            Snowfall::Light => "Лёгкий",
+            Snowfall::Steady => "Умеренный",
+            Snowfall::Heavy => "Сильный",
+            Snowfall::Variable => "Переменный",
+        }
+    }
+
     fn flakes_per_megapoint(self) -> f32 {
         match self {
             Snowfall::Off => 0.0,

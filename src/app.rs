@@ -42,6 +42,8 @@ const ID_WINDOWS: u32 = 204;
 const ID_BEHIND: u32 = 205;
 const ID_CLEAR: u32 = 207;
 const ID_UPDATES: u32 = 208;
+const ID_LANG_EN: u32 = 210;
+const ID_LANG_RU: u32 = 211;
 const ID_QUIT: u32 = 299;
 
 const TIMER_WELCOME: usize = 1;
@@ -163,29 +165,33 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             unsafe {
                 let _ = KillTimer(Some(window), TIMER_WELCOME);
             }
-            welcome::show(Handlers {
-                scatter: Box::new(|pieces| {
-                    APP.with_borrow(|app| {
-                        if let Some(app) = app {
-                            send(app, Command::Scatter(pieces));
-                        }
-                    })
-                }),
-                finished: Box::new(|| {
-                    APP.with_borrow_mut(|app| {
-                        let Some(app) = app else { return };
-                        app.settings.welcomed = true;
-                        app.settings.save();
-                    })
-                }),
-                skipped: Box::new(|| {
-                    APP.with_borrow(|app| {
-                        if let Some(app) = app {
-                            send(app, Command::ReleaseSnowfall);
-                        }
-                    })
-                }),
-            });
+            let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
+            welcome::show(
+                Handlers {
+                    scatter: Box::new(|pieces| {
+                        APP.with_borrow(|app| {
+                            if let Some(app) = app {
+                                send(app, Command::Scatter(pieces));
+                            }
+                        })
+                    }),
+                    finished: Box::new(|| {
+                        APP.with_borrow_mut(|app| {
+                            let Some(app) = app else { return };
+                            app.settings.welcomed = true;
+                            app.settings.save();
+                        })
+                    }),
+                    skipped: Box::new(|| {
+                        APP.with_borrow(|app| {
+                            if let Some(app) = app {
+                                send(app, Command::ReleaseSnowfall);
+                            }
+                        })
+                    }),
+                },
+                is_ru,
+            );
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == TIMER_UPDATE => {
@@ -200,7 +206,12 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             unsafe {
                 let _ = KillTimer(Some(window), TIMER_STARTUP);
             }
-            notify(window, "Snowdrift", "Зимний снегопад запущен.");
+            let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
+            if is_ru {
+                notify(window, "Snowdrift", "Зимний снегопад запущен.");
+            } else {
+                notify(window, "Snowdrift", "Winter snowfall has started.");
+            }
             LRESULT(0)
         }
         WM_UPDATE_CHECK => {
@@ -247,31 +258,61 @@ fn send(app: &App, command: Command) {
 fn show_menu(window: HWND, x: i32, y: i32) {
     let Some(settings) = APP.with_borrow(|app| app.as_ref().map(|app| app.settings)) else { return };
     let login = prefs::opens_at_login();
+    let is_ru = settings.language.is_ru();
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let Ok(snowfall) = CreatePopupMenu() else { return };
         for (i, option) in Snowfall::ALL.iter().enumerate() {
-            let title: Vec<u16> = option.title().encode_utf16().chain([0]).collect();
+            let title_str = if is_ru { option.title_ru() } else { option.title() };
+            let title: Vec<u16> = title_str.encode_utf16().chain([0]).collect();
             let _ = AppendMenuW(snowfall, MF_STRING, (ID_SNOWFALL + i as u32) as usize, PCWSTR(title.as_ptr()));
         }
         let current = Snowfall::ALL.iter().position(|&s| s == settings.snowfall).unwrap_or(0) as u32;
         let _ = CheckMenuRadioItem(snowfall, ID_SNOWFALL, ID_SNOWFALL + 4, ID_SNOWFALL + current, MF_BYCOMMAND.0);
         let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
-        let _ = AppendMenuW(menu, MF_POPUP, snowfall.0 as usize, w!("Snowfall"));
+
+        let label_snowfall: Vec<u16> = (if is_ru { "Интенсивность" } else { "Snowfall" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_POPUP, snowfall.0 as usize, PCWSTR(label_snowfall.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.accumulate), ID_ACCUMULATE as usize, w!("Accumulate"));
+
+        let label_acc: Vec<u16> = (if is_ru { "Сугробы" } else { "Accumulate" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING | checked(settings.accumulate), ID_ACCUMULATE as usize, PCWSTR(label_acc.as_ptr()));
+
         let melt = MF_STRING | checked(settings.melt) | if settings.accumulate { MF_ENABLED } else { MF_GRAYED };
-        let _ = AppendMenuW(menu, melt, ID_MELT as usize, w!("Melt Snow"));
+        let label_melt: Vec<u16> = (if is_ru { "Таяние снега" } else { "Melt Snow" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, melt, ID_MELT as usize, PCWSTR(label_melt.as_ptr()));
+
         let windows = MF_STRING | checked(settings.snow_on_windows) | if settings.behind_windows { MF_GRAYED } else { MF_ENABLED };
-        let _ = AppendMenuW(menu, windows, ID_WINDOWS as usize, w!("Snow on Windows"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_CLEAR as usize, w!("Clear Snow"));
+        let label_win: Vec<u16> = (if is_ru { "Снег на окнах" } else { "Snow on Windows" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, windows, ID_WINDOWS as usize, PCWSTR(label_win.as_ptr()));
+
+        let label_clear: Vec<u16> = (if is_ru { "Очистить снег" } else { "Clear Snow" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING, ID_CLEAR as usize, PCWSTR(label_clear.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND as usize, w!("Behind Windows"));
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, w!("Show in Screenshots"));
-        let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, w!("Open at Login"));
+
+        let label_behind: Vec<u16> = (if is_ru { "За окнами" } else { "Behind Windows" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND as usize, PCWSTR(label_behind.as_ptr()));
+
+        let label_shots: Vec<u16> = (if is_ru { "Видно на скриншотах" } else { "Show in Screenshots" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, PCWSTR(label_shots.as_ptr()));
+
+        let label_login: Vec<u16> = (if is_ru { "Автозапуск при входе" } else { "Open at Login" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, PCWSTR(label_login.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATES as usize, w!("Check for Updates…"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT as usize, w!("Quit"));
+
+        let Ok(lang_menu) = CreatePopupMenu() else { return };
+        let _ = AppendMenuW(lang_menu, MF_STRING | checked(!is_ru), ID_LANG_EN as usize, w!("English"));
+        let _ = AppendMenuW(lang_menu, MF_STRING | checked(is_ru), ID_LANG_RU as usize, w!("Русский"));
+        let _ = CheckMenuRadioItem(lang_menu, ID_LANG_EN, ID_LANG_RU, if is_ru { ID_LANG_RU } else { ID_LANG_EN }, MF_BYCOMMAND.0);
+        let label_lang: Vec<u16> = (if is_ru { "Язык" } else { "Language" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_POPUP, lang_menu.0 as usize, PCWSTR(label_lang.as_ptr()));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+
+        let label_updates: Vec<u16> = (if is_ru { "Проверить обновления…" } else { "Check for Updates…" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATES as usize, PCWSTR(label_updates.as_ptr()));
+
+        let label_quit: Vec<u16> = (if is_ru { "Выход" } else { "Quit" }).encode_utf16().chain([0]).collect();
+        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT as usize, PCWSTR(label_quit.as_ptr()));
 
         // A tray menu only closes on an outside click while its owner is in the foreground.
         let _ = SetForegroundWindow(window);
@@ -297,6 +338,16 @@ fn choose(window: HWND, chosen: u32, login: bool) {
             let status = prefs::set_opens_at_login(!login);
             log!("open at login {}: {status:?}", !login);
         }
+        ID_LANG_EN => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.language = snowdrift::card::Language::En;
+            app.settings.save();
+        }),
+        ID_LANG_RU => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.language = snowdrift::card::Language::Ru;
+            app.settings.save();
+        }),
         _ => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };
             let settings = &mut app.settings;
@@ -350,21 +401,33 @@ fn check_for_updates(window: HWND, asked: bool) {
 
 fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, String>, asked: bool) {
     let current = env!("CARGO_PKG_VERSION");
+    let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
     match result {
         Ok(Some(release)) => {
-            let text = format!(
-                "Доступна новая версия Snowdrift {} (у вас установлена {current}).\n\nЗагрузить и обновить сейчас?",
-                release.version
-            );
+            let text = if is_ru {
+                format!(
+                    "Доступна новая версия Snowdrift {} (у вас установлена {current}).\n\nЗагрузить и обновить сейчас?",
+                    release.version
+                )
+            } else {
+                format!(
+                    "A new version of Snowdrift {} is available (you have {current}).\n\nDownload and update now?",
+                    release.version
+                )
+            };
             if message(window, &text, MB_YESNO | MB_ICONINFORMATION) == IDYES {
-                notify(window, "Snowdrift", "Загрузка обновления в фоне…");
+                notify(window, "Snowdrift", if is_ru { "Загрузка обновления в фоне…" } else { "Downloading update in background…" });
                 download_and_apply(window, release.url);
             }
         }
         Ok(None) if asked => {
             message(
                 window,
-                &format!("У вас установлена последняя версия Snowdrift ({current})."),
+                &if is_ru {
+                    format!("У вас установлена последняя версия Snowdrift ({current}).")
+                } else {
+                    format!("You have the latest version of Snowdrift ({current}).")
+                },
                 MB_OK | MB_ICONINFORMATION,
             );
         }
@@ -374,7 +437,11 @@ fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, 
             if asked {
                 message(
                     window,
-                    &format!("Не удалось проверить обновления.\n\n{error}"),
+                    &if is_ru {
+                        format!("Не удалось проверить обновления.\n\n{error}")
+                    } else {
+                        format!("Failed to check for updates.\n\n{error}")
+                    },
                     MB_OK | MB_ICONWARNING,
                 );
             }
@@ -398,12 +465,17 @@ fn download_and_apply(window: HWND, url: String) {
 }
 
 fn on_update_downloaded(window: HWND, result: std::result::Result<PathBuf, String>) {
+    let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
     match result {
         Ok(installer) => {
             if let Err(error) = update::run_installer(&installer) {
                 message(
                     window,
-                    &format!("Не удалось запустить установщик обновления:\n\n{error}"),
+                    &if is_ru {
+                        format!("Не удалось запустить установщик обновления:\n\n{error}")
+                    } else {
+                        format!("Failed to launch update installer:\n\n{error}")
+                    },
                     MB_OK | MB_ICONERROR,
                 );
             } else {
@@ -413,7 +485,11 @@ fn on_update_downloaded(window: HWND, result: std::result::Result<PathBuf, Strin
         Err(error) => {
             message(
                 window,
-                &format!("Не удалось загрузить обновление:\n\n{error}"),
+                &if is_ru {
+                    format!("Не удалось загрузить обновление:\n\n{error}")
+                } else {
+                    format!("Failed to download update:\n\n{error}")
+                },
                 MB_OK | MB_ICONERROR,
             );
         }

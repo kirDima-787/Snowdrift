@@ -33,14 +33,45 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, Interface, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Language {
+    En,
+    Ru,
+}
+
+impl Language {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::En => Self::Ru,
+            Self::Ru => Self::En,
+        }
+    }
+
+    pub fn is_ru(self) -> bool {
+        matches!(self, Self::Ru)
+    }
+
+    pub fn default_system() -> Self {
+        unsafe extern "system" {
+            fn GetUserDefaultUILanguage() -> u16;
+        }
+        let lang = (unsafe { GetUserDefaultUILanguage() }) & 0x03ff;
+        // 0x19 is Russian, 0x22 Ukrainian, 0x23 Belarusian
+        if lang == 0x19 || lang == 0x22 || lang == 0x23 {
+            Language::Ru
+        } else {
+            Language::En
+        }
+    }
+}
+
 /// Room around the card for its shadow.
 pub const MARGIN: f32 = 36.0;
-const BACKGROUND: [f32; 3] = [0.08, 0.10, 0.15];
-const INK: [f32; 3] = [0.96, 0.98, 1.0];
-const MUTED: [f32; 3] = [0.68, 0.76, 0.88];
-const ACCENT: [f32; 3] = [0.22, 0.58, 0.96];
-const LABEL: [f32; 3] = [1.0, 1.0, 1.0];
-const BUTTON: (f32, f32) = (196.0, 44.0);
+const BACKGROUND: [f32; 3] = [0.105, 0.088, 0.072];
+const INK: [f32; 3] = [0.93, 0.90, 0.85];
+const MUTED: [f32; 3] = [0.78, 0.75, 0.70];
+const LABEL: [f32; 3] = [0.09, 0.075, 0.06];
+const BUTTON: (f32, f32) = (190.0, 44.0);
 const ICON: &[u8] = include_bytes!("../assets/icon-256.png");
 
 /// What the card shows, top to bottom.
@@ -53,6 +84,8 @@ pub struct Content<'a> {
     pub pressed: bool,
     /// Draws a close mark in the top right corner.
     pub closable: bool,
+    /// Draws a language toggle pill in the top left corner.
+    pub lang_toggle: Option<&'a str>,
 }
 
 /// Where the card's controls ended up, in DIPs from the bitmap's top left.
@@ -60,6 +93,7 @@ pub struct Content<'a> {
 pub struct Hits {
     pub button: D2D_RECT_F,
     pub close: Option<D2D_RECT_F>,
+    pub lang: Option<D2D_RECT_F>,
 }
 
 pub struct Card {
@@ -135,23 +169,23 @@ impl Card {
         let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + self.width, bottom: MARGIN + self.height };
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
         unsafe {
-            // A soft cool shadow from stacked translucent outlines, lighter as they spread.
-            let shade = brush([0.02, 0.04, 0.08], 0.035)?;
+            // A soft shadow from stacked translucent outlines, lighter as they spread.
+            let shade = brush([0.0, 0.0, 0.0], 0.04)?;
             for step in 0..16 {
-                let spread = step as f32 * 1.6;
+                let spread = step as f32 * 1.5;
                 let rect = D2D_RECT_F {
                     left: card.left - spread,
-                    top: card.top - spread + 10.0,
+                    top: card.top - spread + 8.0,
                     right: card.right + spread,
-                    bottom: card.bottom + spread + 10.0,
+                    bottom: card.bottom + spread + 8.0,
                 };
-                target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 22.0 + spread, radiusY: 22.0 + spread }, &shade);
+                target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 18.0 + spread, radiusY: 18.0 + spread }, &shade);
             }
             let inset = D2D_RECT_F { left: card.left + 0.5, top: card.top + 0.5, right: card.right - 0.5, bottom: card.bottom - 0.5 };
-            let shape = D2D1_ROUNDED_RECT { rect: inset, radiusX: 22.0, radiusY: 22.0 };
+            let shape = D2D1_ROUNDED_RECT { rect: inset, radiusX: 18.0, radiusY: 18.0 };
             target.FillRoundedRectangle(&shape, &brush(BACKGROUND, 1.0)?);
-            // Subtle glowing frosty cyan-blue outline
-            target.DrawRoundedRectangle(&shape, &brush([0.35, 0.65, 1.0], 0.22)?, 1.2, None);
+            // Clean subtle border
+            target.DrawRoundedRectangle(&shape, &brush([1.0; 3], 0.08)?, 1.0, None);
 
             let text_width = self.width - 64.0;
             let body_width = text_width.min(330.0);
@@ -188,8 +222,8 @@ impl Card {
 
             let left = card.left + (self.width - BUTTON.0) / 2.0;
             let button = D2D_RECT_F { left, top: y, right: left + BUTTON.0, bottom: y + BUTTON.1 };
-            let fill = if content.pressed { ACCENT.map(|c| c * 0.85) } else { ACCENT };
-            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: button, radiusX: 10.0, radiusY: 10.0 }, &brush(fill, 1.0)?);
+            let fill = if content.pressed { [0.82, 0.79, 0.75] } else { INK };
+            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: button, radiusX: 2.0, radiusY: 2.0 }, &brush(fill, 1.0)?);
             target.DrawTextLayout(Vector2 { X: left, Y: y }, &label, &brush(LABEL, 1.0)?, D2D1_DRAW_TEXT_OPTIONS_NONE);
 
             let close = content.closable.then(|| {
@@ -199,7 +233,29 @@ impl Card {
                 }
                 D2D_RECT_F { left: x - 16.0, top: y - 16.0, right: x + 16.0, bottom: y + 16.0 }
             });
-            Ok(Hits { button, close })
+
+            let lang = content.lang_toggle.map(|txt| {
+                let pill = D2D_RECT_F {
+                    left: card.left + 20.0,
+                    top: card.top + 18.0,
+                    right: card.left + 54.0,
+                    bottom: card.top + 40.0,
+                };
+                if let Ok(bg) = brush([1.0; 3], 0.06) {
+                    target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: pill, radiusX: 4.0, radiusY: 4.0 }, &bg);
+                }
+                if let Ok(border) = brush([1.0; 3], 0.15) {
+                    target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: pill, radiusX: 4.0, radiusY: 4.0 }, &border, 1.0, None);
+                }
+                if let Ok(lang_label) = self.layout(txt, w!("Segoe UI"), DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STRETCH_NORMAL, 11.0, 34.0, 0.0, 1.0) {
+                    let _ = lang_label.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    let _ = lang_label.SetMaxHeight(22.0);
+                    target.DrawTextLayout(Vector2 { X: pill.left, Y: pill.top }, &lang_label, &muted, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                }
+                pill
+            });
+
+            Ok(Hits { button, close, lang })
         }
     }
 
