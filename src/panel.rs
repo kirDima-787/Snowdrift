@@ -92,6 +92,7 @@ pub fn show(at: POINT, settings: Settings, login: bool, on_action: impl Fn(Panel
         if let Some(p) = panel.as_mut() {
             p.settings = settings;
             p.login = login;
+            p.on_action = Rc::new(Box::new(on_action));
             p.reposition(at);
             p.paint_and_present();
             unsafe {
@@ -572,7 +573,7 @@ impl PanelWindow {
         (point.x as f32 / self.scale, point.y as f32 / self.scale)
     }
 
-    fn handle_click(&mut self, point: (f32, f32)) {
+    fn handle_click(&mut self, point: (f32, f32)) -> Option<PanelAction> {
         for row in &self.rows {
             if contains(&row.rect, point) {
                 let action = match row.kind {
@@ -616,20 +617,13 @@ impl PanelWindow {
                         self.settings.language = self.settings.language.toggle();
                         PanelAction::Language(self.settings.language)
                     }
-                    RowKind::CheckUpdates => {
-                        close();
-                        PanelAction::CheckUpdates
-                    }
-                    RowKind::Quit => {
-                        close();
-                        PanelAction::Quit
-                    }
+                    RowKind::CheckUpdates => PanelAction::CheckUpdates,
+                    RowKind::Quit => PanelAction::Quit,
                 };
-                self.paint_and_present();
-                (self.on_action)(action);
-                return;
+                return Some(action);
             }
         }
+        None
     }
 }
 
@@ -705,11 +699,24 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         }
         WM_LBUTTONUP => {
             let pt = point(lparam);
-            PANEL.with_borrow_mut(|panel| {
-                let Some(p) = panel.as_mut() else { return };
+            let action_and_cb = PANEL.with_borrow_mut(|panel| {
+                let Some(p) = panel.as_mut() else { return None };
                 let at = p.dips(pt);
-                p.handle_click(at);
+                let action = p.handle_click(at)?;
+                let cb = p.on_action.clone();
+                match action {
+                    PanelAction::CheckUpdates | PanelAction::Quit => {}
+                    _ => p.paint_and_present(),
+                }
+                Some((action, cb))
             });
+
+            if let Some((action, cb)) = action_and_cb {
+                if matches!(action, PanelAction::CheckUpdates | PanelAction::Quit) {
+                    close();
+                }
+                cb(action);
+            }
             LRESULT(0)
         }
         WM_DESTROY => {

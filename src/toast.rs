@@ -63,7 +63,7 @@ struct ToastWindow {
     d2d: ID2D1Factory,
     text: IDWriteFactory,
     imaging: IWICImagingFactory,
-    icon: IWICBitmapSource,
+    icon: Option<IWICBitmapSource>,
 }
 
 thread_local! {
@@ -77,8 +77,13 @@ pub fn show(state: ToastState, is_ru: bool, callbacks: ToastCallbacks) {
             t.state = state;
             t.is_ru = is_ru;
             t.callbacks = Some(cb);
+            t.reposition();
             t.schedule_timer();
             t.paint_and_present();
+            unsafe {
+                let _ = ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
+                let _ = SetWindowPos(t.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
             return;
         }
         if let Ok(mut new_toast) = ToastWindow::new(state, is_ru, cb) {
@@ -86,6 +91,7 @@ pub fn show(state: ToastState, is_ru: bool, callbacks: ToastCallbacks) {
             new_toast.paint_and_present();
             unsafe {
                 let _ = ShowWindow(new_toast.hwnd, SW_SHOWNOACTIVATE);
+                let _ = SetWindowPos(new_toast.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
             *toast = Some(new_toast);
         }
@@ -130,17 +136,20 @@ impl ToastWindow {
 
         unsafe {
             let imaging: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-            let stream = SHCreateMemStream(Some(ICON_BYTES)).ok_or_else(Error::empty)?;
-            let decoder = imaging.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)?;
-            let converter = imaging.CreateFormatConverter()?;
-            converter.Initialize(
-                &decoder.GetFrame(0)?,
-                &GUID_WICPixelFormat32bppPBGRA,
-                WICBitmapDitherTypeNone,
-                None,
-                0.0,
-                WICBitmapPaletteTypeCustom,
-            )?;
+            let icon: Option<IWICBitmapSource> = (|| -> Result<IWICBitmapSource> {
+                let stream = SHCreateMemStream(Some(ICON_BYTES)).ok_or_else(Error::empty)?;
+                let decoder = imaging.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)?;
+                let converter = imaging.CreateFormatConverter()?;
+                converter.Initialize(
+                    &decoder.GetFrame(0)?,
+                    &GUID_WICPixelFormat32bppPBGRA,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                )?;
+                converter.cast()
+            })().ok();
 
             let hwnd = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
@@ -179,8 +188,25 @@ impl ToastWindow {
                 d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
                 text: DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?,
                 imaging,
-                icon: converter.cast()?,
+                icon,
             })
+        }
+    }
+
+    fn reposition(&mut self) {
+        let (scale, origin) = placement(WIDTH, HEIGHT);
+        self.scale = scale;
+        self.size = (((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32, ((HEIGHT + 2.0 * MARGIN) * scale).ceil() as i32);
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                origin.x,
+                origin.y,
+                self.size.0,
+                self.size.1,
+                SWP_NOACTIVATE,
+            );
         }
     }
 
@@ -189,7 +215,7 @@ impl ToastWindow {
             let _ = KillTimer(Some(self.hwnd), TIMER_CLOSE);
             let _ = KillTimer(Some(self.hwnd), TIMER_PULSE);
             match &self.state {
-                ToastState::UpToDate(_) => {
+                ToastState::UpToDate(_) | ToastState::Error(_) => {
                     // Auto-close after 4.5 seconds
                     let _ = SetTimer(Some(self.hwnd), TIMER_CLOSE, 4500, None);
                 }
@@ -260,9 +286,25 @@ impl ToastWindow {
             }
 
             // Header: Snowflake icon
-            if let Ok(icon) = target.CreateBitmapFromWicBitmap(&self.icon, None) {
-                let rect = D2D_RECT_F { left: card.left + 16.0, top: card.top + 13.0, right: card.left + 34.0, bottom: card.top + 31.0 };
-                target.DrawBitmap(&icon, Some(&rect), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+            let icon_rect = D2D_RECT_F { left: card.left + 16.0, top: card.top + 13.0, right: card.left + 34.0, bottom: card.top + 31.0 };
+            let mut icon_drawn = false;
+            if let Some(wic_icon) = &self.icon {
+                if let Ok(icon) = target.CreateBitmapFromWicBitmap(wic_icon, None) {
+                    target.DrawBitmap(&icon, Some(&icon_rect), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+                    icon_drawn = true;
+                }
+            }
+            if !icon_drawn {
+                if let Ok(b) = brush([0.65, 0.85, 1.0], 0.95) {
+                    let cx = icon_rect.left + 9.0;
+                    let cy = icon_rect.top + 9.0;
+                    let r = 6.5;
+                    for a in [0.0f32, 1.0472f32, 2.0944f32] {
+                        let dx = a.sin() * r;
+                        let dy = a.cos() * r;
+                        target.DrawLine(Vector2 { X: cx - dx, Y: cy - dy }, Vector2 { X: cx + dx, Y: cy + dy }, &b, 1.3, None);
+                    }
+                }
             }
 
             // Header title: "Snowdrift"
