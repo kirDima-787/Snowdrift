@@ -54,7 +54,7 @@ features = [
 ]
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["allow-unsafe-code", "shm", "xfixes", "shape"] }
+x11rb = { version = "0.13", default-features = false, features = ["shm", "xfixes", "shape"] }
 
 [profile.release]
 lto = true
