@@ -1,0 +1,89 @@
+name: Build and Release Multiplatform
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach binaries to (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (DMG)
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build macOS App and DMG
+        run: |
+          chmod +x build-macos.sh
+          ./build-macos.sh
+
+      - name: Upload DMG to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: build/Snowdrift.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    name: Build Linux (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Linux binary
+        run: |
+          cargo build --release --bin Snowdrift
+          mkdir -p dist-linux
+          cp target/release/Snowdrift dist-linux/snowdrift
+          cp README.md dist-linux/
+          tar -czvf Snowdrift-linux-x86_64.tar.gz -C dist-linux .
+
+      - name: Upload Linux archive to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: Snowdrift-linux-x86_64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    name: Build Windows (EXE)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows binary & installer
+        shell: pwsh
+        run: |
+          cargo build --release --bin Snowdrift
+          $env:SNOWDRIFT_APP = "target/release/Snowdrift.exe"
+          cargo build --release --features setup --bin Snowdrift-Setup
+
+      - name: Upload Windows binaries to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            target/release/Snowdrift.exe
+            target/release/Snowdrift-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -53,6 +53,9 @@ features = [
     "Win32_UI_WindowsAndMessaging",
 ]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "shm", "xfixes", "shape"] }
+
 [profile.release]
 lto = true
 codegen-units = 1
