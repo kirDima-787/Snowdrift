@@ -709,7 +709,13 @@ impl SnowSimulation {
     // Particles
 
     fn advance_flakes(&mut self, dt: f32) {
-        let wind = self.air.breeze();
+        let is_blizzard = self.is_blizzard();
+        let wind = if is_blizzard {
+            // Elegant diagonal slant for blizzard (~18-20 degrees tilt with natural oscillation)
+            64.0 + ((self.air.clock * 0.16).sin() as f32) * 12.0 + self.air.breeze() * 0.4
+        } else {
+            self.air.breeze()
+        };
         let follow = (dt * 1.2).min(1.0);
         let settle = (dt * 1.6).min(1.0);
         let wake_radius: f32 = self.air.wake_radius;
@@ -1476,14 +1482,23 @@ impl Air {
     }
 
     fn make_flake(&mut self, width: f32, y: f32, blizzard: bool) -> Flake {
-        let wind = self.wind_speed();
+        let wind = if blizzard {
+            64.0 + ((self.clock * 0.16).sin() as f32) * 12.0 + self.wind_speed() * 0.4
+        } else {
+            self.wind_speed()
+        };
         let random = &mut self.random;
         let near = random.next() < 0.02;
         let depth = if near { 1.0 } else { random.next().powf(1.6) };
         let base_speed = if near { random.range(75.0, 100.0) } else { 16.0 + depth * 50.0 + random.range(0.0, 10.0) };
         let fall_speed = if blizzard { base_speed * 2.4 } else { base_speed };
+        let spawn_x = if blizzard {
+            random.range(-60.0, width + 40.0)
+        } else {
+            random.range(-30.0, width + 30.0)
+        };
         Flake {
-            position: V2::new(random.range(-30.0, width + 30.0), y),
+            position: V2::new(spawn_x, y),
             velocity: V2::new(wind * (0.35 + 0.65 * depth), -fall_speed),
             fall_speed,
             size: if near { random.range(8.0, 13.0) } else { 1.4 + depth * 4.4 + random.range(0.0, 1.0) },

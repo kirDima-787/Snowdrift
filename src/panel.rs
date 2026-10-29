@@ -150,6 +150,7 @@ struct PanelWindow {
     login: bool,
     hovered: Option<RowKind>,
     holding_snowfall: Option<Instant>,
+    holding_snowfall_triggered: bool,
     rows: Vec<Row>,
     on_action: Rc<Box<dyn Fn(PanelAction)>>,
     d2d: ID2D1Factory,
@@ -172,6 +173,8 @@ pub fn show(at: POINT, settings: Settings, login: bool, on_action: impl Fn(Panel
             p.settings = settings;
             p.login = login;
             p.on_action = Rc::new(Box::new(on_action));
+            p.holding_snowfall = None;
+            p.holding_snowfall_triggered = false;
             p.reposition(at);
             p.start_anim();
             p.paint_and_present();
@@ -254,6 +257,7 @@ impl PanelWindow {
                 login,
                 hovered: None,
                 holding_snowfall: None,
+                holding_snowfall_triggered: false,
                 rows: Vec::new(),
                 on_action: Rc::new(on_action),
                 d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
@@ -396,26 +400,68 @@ impl PanelWindow {
         draw_glass_card(target, card, t.radius, backdrop.as_ref(), tint);
 
         unsafe {
+            let is_blizzard = self.settings.snowfall == Snowfall::Blizzard;
             for row in &self.rows {
                 let is_hovered = self.hovered == Some(row.kind);
-                if is_hovered {
-                    let item_rect = D2D_RECT_F { top: row.rect.top + 1.0, bottom: row.rect.bottom - 1.0, ..row.rect };
+                let freeze_progress = if row.kind == RowKind::Snowfall {
+                    if let Some(start) = self.holding_snowfall {
+                        (start.elapsed().as_secs_f32() / 3.0).clamp(0.0, 1.0)
+                    } else if is_blizzard {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                let item_rect = D2D_RECT_F { top: row.rect.top + 1.0, bottom: row.rect.bottom - 1.0, ..row.rect };
+                let rounded = D2D1_ROUNDED_RECT { rect: item_rect, radiusX: t.hover_radius, radiusY: t.hover_radius };
+
+                if freeze_progress > 0.0 {
+                    // Glacial frosted ice tint
+                    let ice_alpha = if is_hovered { 0.28 + 0.12 * freeze_progress } else { 0.20 * freeze_progress };
+                    if let Ok(ice_b) = brush([0.38, 0.74, 1.0], ice_alpha) {
+                        target.FillRoundedRectangle(&rounded, &ice_b);
+                    }
+                    // Frost crystalline top sheen
+                    let frost_top = D2D_RECT_F {
+                        left: item_rect.left + 2.0,
+                        top: item_rect.top + 1.0,
+                        right: item_rect.right - 2.0,
+                        bottom: item_rect.top + (item_rect.bottom - item_rect.top) * 0.44,
+                    };
+                    if let Ok(frost_b) = brush([0.84, 0.94, 1.0], 0.16 * freeze_progress) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: frost_top, radiusX: t.hover_radius, radiusY: t.hover_radius }, &frost_b);
+                    }
+                    // Crisp icy border rim
+                    if let Ok(border_b) = brush([0.72, 0.90, 1.0], 0.38 * freeze_progress) {
+                        target.DrawRoundedRectangle(&rounded, &border_b, 1.0, None);
+                    }
+                } else if is_hovered {
                     let (fill_col, fill_alpha) = if row.kind == RowKind::Quit {
                         ([1.0, 0.35, 0.35], 0.18)
                     } else {
                         (t.hover_fill, t.hover_alpha)
                     };
                     if let Ok(hover_b) = brush(fill_col, fill_alpha) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: t.hover_radius, radiusY: t.hover_radius }, &hover_b);
+                        target.FillRoundedRectangle(&rounded, &hover_b);
                     }
                 }
 
-                self.draw_left_icon(target, row.kind, row.rect, is_hovered);
+                self.draw_left_icon(target, row.kind, row.rect, is_hovered, freeze_progress);
 
                 let label = self.row_label(row.kind);
                 if let Ok(lbl_layout) = self.text_layout(&label, t.font_size, t.width - 40.0) {
                     let col = if row.kind == RowKind::Quit && is_hovered {
                         [1.0, 0.55, 0.55]
+                    } else if row.kind == RowKind::Snowfall && freeze_progress > 0.0 {
+                        // Luminous frozen ice text tint
+                        [
+                            0.93 - 0.18 * freeze_progress,
+                            0.94 + 0.04 * freeze_progress,
+                            0.97 + 0.03 * freeze_progress,
+                        ]
                     } else if is_hovered {
                         [1.0, 1.0, 1.0]
                     } else {
@@ -438,13 +484,20 @@ impl PanelWindow {
         }
     }
 
-    fn draw_left_icon(&self, target: &ID2D1RenderTarget, kind: RowKind, row_rect: D2D_RECT_F, is_hovered: bool) {
+    fn draw_left_icon(&self, target: &ID2D1RenderTarget, kind: RowKind, row_rect: D2D_RECT_F, is_hovered: bool, freeze_progress: f32) {
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
         let cx = MARGIN + 17.0;
         let cy = row_rect.top + self.theme.row_h / 2.0;
 
         let col = if kind == RowKind::Quit && is_hovered {
             [1.0, 0.45, 0.45]
+        } else if kind == RowKind::Snowfall && freeze_progress > 0.0 {
+            // Glowing ice-blue snowflake
+            [
+                0.85 - 0.45 * freeze_progress,
+                0.88 + 0.04 * freeze_progress,
+                0.92 + 0.08 * freeze_progress,
+            ]
         } else if is_hovered {
             [1.0, 1.0, 1.0]
         } else {
@@ -491,6 +544,11 @@ impl PanelWindow {
             }
             // Action items: precision vector icon pack
             RowKind::Snowfall => {
+                if freeze_progress > 0.2 {
+                    if let Ok(glow_b) = brush([0.38, 0.76, 1.0], 0.35 * freeze_progress) {
+                        self.draw_vector_snowflake(target, &glow_b, cx, cy);
+                    }
+                }
                 self.draw_vector_snowflake(target, &b, cx, cy);
             }
             RowKind::ClearSnow => {
@@ -745,19 +803,17 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     unsafe { let _ = KillTimer(Some(hwnd), HOLD_TIMER); }
                     return None;
                 };
-                if start.elapsed().as_secs_f32() >= 3.0 {
-                    p.holding_snowfall = None;
-                    unsafe {
-                        let _ = KillTimer(Some(hwnd), HOLD_TIMER);
-                        let _ = ReleaseCapture();
-                    }
+                let progress = (start.elapsed().as_secs_f32() / 3.0).clamp(0.0, 1.0);
+                let mut action = None;
+                if progress >= 1.0 && !p.holding_snowfall_triggered {
+                    p.holding_snowfall_triggered = true;
                     BLIZZARD_UNLOCKED.set(true);
                     p.settings.snowfall = Snowfall::Blizzard;
-                    p.paint_and_present();
-                    Some((PanelAction::Snowfall(Snowfall::Blizzard), p.on_action.clone()))
-                } else {
-                    None
+                    action = Some((PanelAction::Snowfall(Snowfall::Blizzard), p.on_action.clone()));
                 }
+                // Continuously repaint while holding to smoothly show the icing animation
+                p.paint_and_present();
+                action
             });
             if let Some((action, cb)) = triggered_action {
                 cb(action);
@@ -772,10 +828,12 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 for row in &p.rows {
                     if contains(&row.rect, at) && row.kind == RowKind::Snowfall {
                         p.holding_snowfall = Some(Instant::now());
+                        p.holding_snowfall_triggered = false;
                         unsafe {
                             let _ = SetCapture(hwnd);
-                            let _ = SetTimer(Some(hwnd), HOLD_TIMER, 50, None);
+                            let _ = SetTimer(Some(hwnd), HOLD_TIMER, 30, None);
                         }
+                        p.paint_and_present();
                         break;
                     }
                 }
@@ -825,17 +883,21 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             let pt = point(lparam);
             let action_and_cb = PANEL.with_borrow_mut(|panel| {
                 let Some(p) = panel.as_mut() else { return None };
+                let was_triggered = p.holding_snowfall_triggered;
                 let was_holding = p.holding_snowfall.take();
+                p.holding_snowfall_triggered = false;
                 unsafe {
                     let _ = KillTimer(Some(hwnd), HOLD_TIMER);
                     let _ = ReleaseCapture();
                 }
-                if let Some(start) = was_holding {
-                    if start.elapsed().as_secs_f32() >= 3.0 {
-                        // Already handled by HOLD_TIMER, do nothing on release
-                        return None;
-                    }
+
+                // If Blizzard was activated during this hold, or if the user held the button (>500ms),
+                // do NOT cycle the row on release! The button remains frozen and Blizzard stays active.
+                if was_triggered || was_holding.map(|s| s.elapsed().as_millis() > 500).unwrap_or(false) {
+                    p.paint_and_present();
+                    return None;
                 }
+
                 let at = p.dips(pt);
                 let action = p.handle_click(at)?;
                 let cb = p.on_action.clone();
