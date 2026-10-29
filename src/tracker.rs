@@ -42,7 +42,7 @@ const IGNORED: [&str; 10] = [
 ];
 /// Switchers, thumbnails and the shell's flyouts (hidden tray icons, context menus, Start and the like) hide snow behind
 /// them but don't collect any. A flyout's rectangle also takes in a clear margin for its shadow, well outside what shows.
-pub const COVER_ONLY: [&str; 8] = [
+pub const COVER_ONLY: [&str; 10] = [
     "XamlExplorerHostIslandWindow",
     "MultitaskingViewFrame",
     "TaskListThumbnailWnd",
@@ -51,6 +51,8 @@ pub const COVER_ONLY: [&str; 8] = [
     "NotifyIconOverflowWindow",
     "Xaml_WindowedPopupClass",
     "Windows.UI.Core.CoreWindow",
+    "SnowdriftPanel",
+    "SnowdriftToast",
 ];
 
 #[derive(Clone, Copy, Default)]
