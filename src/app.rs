@@ -38,6 +38,7 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 
 const TIMER_WELCOME: usize = 1;
+const TIMER_TRAY_HOLD: usize = 1002;
 const TIMER_UPDATE: usize = 2;
 const TIMER_STARTUP: usize = 3;
 
@@ -128,11 +129,41 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
     match message {
         WM_TRAY => {
             let event = (lparam.0 & 0xffff) as u32;
-            if event == WM_CONTEXTMENU || event == NIN_SELECT || event == NIN_KEYSELECT {
-                let x = (wparam.0 & 0xffff) as i16 as i32;
-                let y = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
-                show_tray_panel(window, x, y);
+            match event {
+                WM_LBUTTONDOWN => {
+                    unsafe {
+                        let _ = SetTimer(Some(window), TIMER_TRAY_HOLD, 3000, None);
+                    }
+                }
+                WM_LBUTTONUP => {
+                    unsafe {
+                        let _ = KillTimer(Some(window), TIMER_TRAY_HOLD);
+                    }
+                    let x = (wparam.0 & 0xffff) as i16 as i32;
+                    let y = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
+                    show_tray_panel(window, x, y);
+                }
+                WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => {
+                    unsafe {
+                        let _ = KillTimer(Some(window), TIMER_TRAY_HOLD);
+                    }
+                    let x = (wparam.0 & 0xffff) as i16 as i32;
+                    let y = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
+                    show_tray_panel(window, x, y);
+                }
+                _ => {}
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_TRAY_HOLD => {
+            unsafe {
+                let _ = KillTimer(Some(window), TIMER_TRAY_HOLD);
+            }
+            APP.with_borrow(|app| {
+                if let Some(app) = app {
+                    send(app, Command::Blizzard);
+                }
+            });
             LRESULT(0)
         }
         WM_WTSSESSION_CHANGE => {
@@ -273,6 +304,11 @@ fn show_tray_panel(window: HWND, x: i32, y: i32) {
 fn handle_panel_action(window: HWND, action: PanelAction) {
     match action {
         PanelAction::Quit => quit(window),
+        PanelAction::Blizzard => APP.with_borrow(|app| {
+            if let Some(app) = app {
+                send(app, Command::Blizzard);
+            }
+        }),
         PanelAction::CheckUpdates => check_for_updates(window, true),
         PanelAction::ClearSnow => APP.with_borrow(|app| {
             if let Some(app) = app {

@@ -226,6 +226,31 @@ fn a_window_slid_past_the_screen_edge_leaves_its_snow_heaped_against_it() {
     }
 }
 
+#[test]
+fn blizzard_causes_heavy_snowfall_and_shake() {
+    let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Steady);
+    assert!(!simulation.is_blizzard());
+    assert_eq!(simulation.blizzard_shake(), (0.0, 0.0));
+
+    simulation.start_blizzard();
+    assert!(simulation.is_blizzard());
+
+    let mut had_shake = false;
+    for _ in 0..300 {
+        simulation.step(DT, AWAY);
+        let (sx, sy) = simulation.blizzard_shake();
+        if sx.abs() > 0.01 || sy.abs() > 0.01 {
+            had_shake = true;
+        }
+    }
+    assert!(had_shake, "blizzard must produce dynamic shake during wind surges");
+    assert!(simulation.sprite_count() > 300, "blizzard must generate heavy snowfall swarms");
+
+    simulation.stop_blizzard();
+    assert!(!simulation.is_blizzard());
+    assert_finite(&simulation);
+}
+
 fn shake(simulation: &mut SnowSimulation, id: isize) {
     let none = HashSet::new();
     let mut t = 0.0;

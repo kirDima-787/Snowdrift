@@ -229,7 +229,7 @@ impl Surface {
         }
     }
 
-    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, ambient: Ambient, time: f32) -> Result<()> {
+    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, ambient: Ambient, time: f32, shake: (f32, f32)) -> Result<()> {
         self.reserve(gpu, simulation.sprite_count(), simulation.column_count())?;
         let (Some(sprite_buffer), Some((height_buffer, height_view))) = (&self.sprites, &self.heights) else {
             return Ok(());
@@ -248,8 +248,8 @@ impl Surface {
             context.OMSetRenderTargets(Some(&[Some(self.target_view.clone())]), None);
             context.ClearRenderTargetView(&self.target_view, &[0.0; 4]);
             context.RSSetViewports(Some(&[D3D11_VIEWPORT {
-                TopLeftX: 0.0,
-                TopLeftY: 0.0,
+                TopLeftX: shake.0,
+                TopLeftY: shake.1,
                 Width: self.width as f32,
                 Height: self.height as f32,
                 MinDepth: 0.0,

@@ -25,7 +25,7 @@ use windows::Win32::Graphics::Imaging::{
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
 use windows_numerics::Vector2;
@@ -39,6 +39,7 @@ const MARGIN: f32 = 14.0; // transparent margin around the card (shadow lives he
 const ROW_COUNT: f32 = 11.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const ANIM_TIMER: usize = 201;
+const HOLD_TIMER: usize = 202;
 const ANIM_MS: f32 = 180.0;
 const ANIM_SLIDE: f32 = 12.0; // px the panel travels while appearing
 const CURSOR_GAP: f32 = 10.0; // distance between the mouse and the panel
@@ -113,6 +114,7 @@ pub enum PanelAction {
     Language(Language),
     CheckUpdates,
     Quit,
+    Blizzard,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -148,6 +150,7 @@ struct PanelWindow {
     settings: Settings,
     login: bool,
     hovered: Option<RowKind>,
+    holding_snowfall: Option<Instant>,
     rows: Vec<Row>,
     on_action: Rc<Box<dyn Fn(PanelAction)>>,
     d2d: ID2D1Factory,
@@ -190,6 +193,8 @@ pub fn close() {
     if let Some(p) = PANEL.take() {
         unsafe {
             let _ = KillTimer(Some(p.hwnd), ANIM_TIMER);
+            let _ = KillTimer(Some(p.hwnd), HOLD_TIMER);
+            let _ = ReleaseCapture();
             let _ = DestroyWindow(p.hwnd);
         }
     }
@@ -244,6 +249,7 @@ impl PanelWindow {
                 settings,
                 login,
                 hovered: None,
+                holding_snowfall: None,
                 rows: Vec::new(),
                 on_action: Rc::new(on_action),
                 d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
@@ -400,6 +406,25 @@ impl PanelWindow {
                     }
                 }
 
+                if row.kind == RowKind::Snowfall {
+                    if let Some(start) = self.holding_snowfall {
+                        let progress = (start.elapsed().as_secs_f32() / 3.0).clamp(0.0, 1.0);
+                        let fill_w = (row.rect.right - row.rect.left) * progress;
+                        let progress_rect = D2D_RECT_F {
+                            left: row.rect.left,
+                            top: row.rect.top + 1.0,
+                            right: row.rect.left + fill_w,
+                            bottom: row.rect.bottom - 1.0,
+                        };
+                        if let Ok(ice_b) = brush([0.35, 0.75, 1.0], 0.28 + 0.35 * progress) {
+                            target.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: progress_rect, radiusX: t.hover_radius, radiusY: t.hover_radius },
+                                &ice_b,
+                            );
+                        }
+                    }
+                }
+
                 self.draw_left_icon(target, row.kind, row.rect, is_hovered);
 
                 let label = self.row_label(row.kind);
@@ -411,8 +436,16 @@ impl PanelWindow {
                     } else {
                         [0.93, 0.94, 0.97]
                     };
+                    let mut text_x = card.left + 32.0;
+                    if row.kind == RowKind::Snowfall && self.holding_snowfall.is_some() {
+                        let start = self.holding_snowfall.unwrap();
+                        let elapsed = start.elapsed().as_secs_f32();
+                        if elapsed > 0.6 {
+                            text_x += (elapsed * 55.0).sin() * (elapsed / 3.0) * 1.8;
+                        }
+                    }
                     if let Ok(lbl_b) = brush(col, 1.0) {
-                        target.DrawTextLayout(Vector2 { X: card.left + 32.0, Y: row.rect.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                        target.DrawTextLayout(Vector2 { X: text_x, Y: row.rect.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
                     }
                 }
             }
@@ -571,7 +604,14 @@ impl PanelWindow {
         let is_ru = self.settings.language.is_ru();
         match kind {
             RowKind::Snowfall => {
-                if is_ru {
+                if let Some(start) = self.holding_snowfall {
+                    let remaining = (3.0 - start.elapsed().as_secs_f32()).max(0.1);
+                    if is_ru {
+                        format!("Метель через {:.1}с...", remaining)
+                    } else {
+                        format!("Blizzard in {:.1}s...", remaining)
+                    }
+                } else if is_ru {
                     let title = match self.settings.snowfall {
                         Snowfall::Off => "Выкл",
                         Snowfall::Light => "Мало",
@@ -727,6 +767,51 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             });
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == HOLD_TIMER => {
+            let triggered_action = PANEL.with_borrow_mut(|panel| {
+                let Some(p) = panel.as_mut() else { return None };
+                let Some(start) = p.holding_snowfall else {
+                    unsafe { let _ = KillTimer(Some(hwnd), HOLD_TIMER); }
+                    return None;
+                };
+                let elapsed = start.elapsed().as_secs_f32();
+                if elapsed >= 3.0 {
+                    p.holding_snowfall = None;
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), HOLD_TIMER);
+                        let _ = ReleaseCapture();
+                    }
+                    Some((PanelAction::Blizzard, p.on_action.clone()))
+                } else {
+                    p.paint_and_present();
+                    None
+                }
+            });
+            if let Some((action, cb)) = triggered_action {
+                close();
+                cb(action);
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let pt = point(lparam);
+            PANEL.with_borrow_mut(|panel| {
+                let Some(p) = panel.as_mut() else { return };
+                let at = p.dips(pt);
+                for row in &p.rows {
+                    if contains(&row.rect, at) && row.kind == RowKind::Snowfall {
+                        p.holding_snowfall = Some(Instant::now());
+                        unsafe {
+                            let _ = SetCapture(hwnd);
+                            let _ = SetTimer(Some(hwnd), HOLD_TIMER, 16, None);
+                        }
+                        p.paint_and_present();
+                        break;
+                    }
+                }
+            });
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -770,7 +855,17 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             let pt = point(lparam);
             let action_and_cb = PANEL.with_borrow_mut(|panel| {
                 let Some(p) = panel.as_mut() else { return None };
+                let was_holding = p.holding_snowfall.take();
+                unsafe {
+                    let _ = KillTimer(Some(hwnd), HOLD_TIMER);
+                    let _ = ReleaseCapture();
+                }
                 let at = p.dips(pt);
+                if let Some(start) = was_holding {
+                    if start.elapsed().as_secs_f32() >= 3.0 {
+                        return Some((PanelAction::Blizzard, p.on_action.clone()));
+                    }
+                }
                 let action = p.handle_click(at)?;
                 let cb = p.on_action.clone();
                 match action {
@@ -781,7 +876,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             });
 
             if let Some((action, cb)) = action_and_cb {
-                if matches!(action, PanelAction::CheckUpdates | PanelAction::Quit) {
+                if matches!(action, PanelAction::CheckUpdates | PanelAction::Quit | PanelAction::Blizzard) {
                     close();
                 }
                 cb(action);

@@ -310,7 +310,8 @@ impl Screen {
         if !(changed || (self.simulation.has_snow() && self.idle_frames % 2 == 0)) {
             return Ok(false);
         }
-        self.surface.draw(gpu, &self.simulation, Ambient { light, shadow_tint: self.shadow_tint }, time)?;
+        let shake = self.simulation.blizzard_shake();
+        self.surface.draw(gpu, &self.simulation, Ambient { light, shadow_tint: self.shadow_tint }, time, shake)?;
         Ok(true)
     }
 

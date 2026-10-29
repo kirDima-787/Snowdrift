@@ -403,6 +403,11 @@ impl SnowLayer {
             })
             .collect();
     }
+
+    pub fn set_depth(&mut self, depth: f32) {
+        self.depth = depth;
+        self.update_capacity();
+    }
 }
 
 /// Moves snow between columns, packed snow in proportion.

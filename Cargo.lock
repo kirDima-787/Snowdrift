@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "snowdrift"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "windows",
  "windows-numerics",
