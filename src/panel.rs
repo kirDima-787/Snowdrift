@@ -5,7 +5,9 @@ use std::mem::size_of;
 use std::rc::Rc;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
-use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT};
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+};
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -29,10 +31,14 @@ use snowdrift::card::Language;
 use snowdrift::simulation::Snowfall;
 
 const CLASS: PCWSTR = w!("SnowdriftPanel");
-const WIDTH: f32 = 236.0;
-const HEIGHT: f32 = 343.0;
-const MARGIN: f32 = 16.0;
-const ROW_H: f32 = 29.0;
+const WIDTH: f32 = 212.0;
+const MARGIN: f32 = 14.0; // прозрачное поле вокруг карточки под тень
+const ROW_H: f32 = 25.0;
+const PAD: f32 = 6.0; // внутренний отступ сверху/снизу
+const SEP: f32 = 9.0; // высота разделителя между группами
+const RADIUS: f32 = 12.0;
+// 11 строк + 2 разделителя — высота считается сама, ничего подгонять руками не надо
+const HEIGHT: f32 = PAD * 2.0 + ROW_H * 11.0 + SEP * 2.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 pub enum PanelAction {
@@ -184,58 +190,28 @@ impl PanelWindow {
     }
 
     fn build_rows(&mut self) {
-        let card_left = MARGIN;
-        let card_top = MARGIN;
-        let mut y = card_top + 5.0;
+        let rx = MARGIN + 4.0;
+        let row_w = WIDTH - 8.0;
+        let mut y = MARGIN + PAD;
 
         self.rows.clear();
-        let row_w = WIDTH - 8.0;
-        let rx = card_left + 4.0;
 
-        // Group 1: Snow simulation controls (5 items)
-        let kinds_group1 = [
-            RowKind::Snowfall,
-            RowKind::Accumulate,
-            RowKind::Melt,
-            RowKind::SnowOnWindows,
-            RowKind::ClearSnow,
+        let groups: [&[RowKind]; 3] = [
+            &[RowKind::Snowfall, RowKind::Accumulate, RowKind::Melt, RowKind::SnowOnWindows, RowKind::ClearSnow],
+            &[RowKind::BehindWindows, RowKind::ShowInScreenshots, RowKind::OpenAtLogin],
+            &[RowKind::Language, RowKind::CheckUpdates, RowKind::Quit],
         ];
-        for kind in kinds_group1 {
-            self.rows.push(Row {
-                kind,
-                rect: D2D_RECT_F { left: rx, top: y, right: rx + row_w, bottom: y + ROW_H },
-            });
-            y += ROW_H;
-        }
-
-        y += 7.0; // Separator space
-        // Group 2: Window / display settings (3 items)
-        let kinds_group2 = [
-            RowKind::BehindWindows,
-            RowKind::ShowInScreenshots,
-            RowKind::OpenAtLogin,
-        ];
-        for kind in kinds_group2 {
-            self.rows.push(Row {
-                kind,
-                rect: D2D_RECT_F { left: rx, top: y, right: rx + row_w, bottom: y + ROW_H },
-            });
-            y += ROW_H;
-        }
-
-        y += 7.0; // Separator space
-        // Group 3: App lifecycle (3 items)
-        let kinds_group3 = [
-            RowKind::Language,
-            RowKind::CheckUpdates,
-            RowKind::Quit,
-        ];
-        for kind in kinds_group3 {
-            self.rows.push(Row {
-                kind,
-                rect: D2D_RECT_F { left: rx, top: y, right: rx + row_w, bottom: y + ROW_H },
-            });
-            y += ROW_H;
+        for (i, group) in groups.iter().enumerate() {
+            if i > 0 {
+                y += SEP;
+            }
+            for &kind in group.iter() {
+                self.rows.push(Row {
+                    kind,
+                    rect: D2D_RECT_F { left: rx, top: y, right: rx + row_w, bottom: y + ROW_H },
+                });
+                y += ROW_H;
+            }
         }
     }
 
@@ -272,105 +248,55 @@ impl PanelWindow {
         let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + WIDTH, bottom: MARGIN + HEIGHT };
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
 
+        draw_glass_card(target, card, RADIUS);
+
         unsafe {
-            // Windows 11 / Apple macOS ambient shadow (12 soft passes)
-            for step in 0..12 {
-                let factor = 1.0 - (step as f32 / 12.0);
-                let alpha = 0.032 * (factor * factor);
-                let spread = (step as f32 + 1.0) * 1.15;
-                let rect = D2D_RECT_F {
-                    left: card.left - spread,
-                    top: card.top - spread + 2.0,
-                    right: card.right + spread,
-                    bottom: card.bottom + spread + 2.0,
-                };
-                if let Ok(shade) = brush([0.0, 0.0, 0.0], alpha) {
-                    target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 10.0 + spread, radiusY: 10.0 + spread }, &shade);
-                }
-            }
-
-            // Apple & WindBet dark obsidian liquid glass acrylic fill
-            // Deep obsidian navy #0f1626 / rgb(15, 22, 38) at 0.95 opacity
-            let shape = D2D1_ROUNDED_RECT { rect: card, radiusX: 10.0, radiusY: 10.0 };
-            if let Ok(bg) = brush([0.06, 0.09, 0.15], 0.95) {
-                target.FillRoundedRectangle(&shape, &bg);
-            }
-
-            // Subtle specular glass border: 1px rgba(255, 255, 255, 0.12)
-            if let Ok(border) = brush([1.0, 1.0, 1.0], 0.12) {
-                target.DrawRoundedRectangle(&shape, &border, 1.0, None);
-            }
-
-            // Apple macOS glass specular refraction hairline on the top edge
-            if let Ok(sheen) = brush([1.0, 1.0, 1.0], 0.22) {
-                target.DrawLine(
-                    Vector2 { X: card.left + 12.0, Y: card.top + 1.0 },
-                    Vector2 { X: card.right - 12.0, Y: card.top + 1.0 },
-                    &sheen,
-                    1.0,
-                    None,
-                );
-            }
-
-            // Draw items
             for row in &self.rows {
                 let is_hovered = self.hovered == Some(row.kind);
                 if is_hovered {
-                    let item_rect = D2D_RECT_F {
-                        left: card.left + 4.0,
-                        top: row.rect.top + 1.0,
-                        right: card.right - 4.0,
-                        bottom: row.rect.bottom - 1.0,
-                    };
-                    let (fill_col, fill_alpha, border_col, border_alpha) = if row.kind == RowKind::Quit {
-                        ([0.94, 0.27, 0.27], 0.18, [0.94, 0.27, 0.27], 0.28)
+                    let item_rect = D2D_RECT_F { top: row.rect.top + 1.0, bottom: row.rect.bottom - 1.0, ..row.rect };
+                    // Нейтральная подсветка как в меню Windows 11, красная только для «Выход»
+                    let (fill_col, fill_alpha) = if row.kind == RowKind::Quit {
+                        ([1.0, 0.35, 0.35], 0.16)
                     } else {
-                        // WindBet electric blue subtle glow on hover
-                        ([0.15, 0.39, 0.92], 0.22, [0.22, 0.74, 0.97], 0.24)
+                        ([1.0, 1.0, 1.0], 0.09)
                     };
                     if let Ok(hover_b) = brush(fill_col, fill_alpha) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 5.0, radiusY: 5.0 }, &hover_b);
-                    }
-                    if let Ok(hover_border) = brush(border_col, border_alpha) {
-                        target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 5.0, radiusY: 5.0 }, &hover_border, 1.0, None);
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 6.0, radiusY: 6.0 }, &hover_b);
                     }
                 }
 
-                // Left slot: precision vector icon pack (checkmark or crisp vector symbols)
                 self.draw_left_icon(target, row.kind, row.rect, is_hovered);
 
-                // Item label: clean Windows 11 typography
-                let text_x = card.left + 35.0;
-                let text_y = row.rect.top + 6.5;
                 let label = self.row_label(row.kind);
-                if let Ok(lbl_layout) = self.text_layout(&label, 12.0, WIDTH - 46.0) {
+                if let Ok(lbl_layout) = self.text_layout(&label, 12.0, WIDTH - 40.0) {
                     let col = if row.kind == RowKind::Quit && is_hovered {
-                        [1.0, 0.45, 0.45]
+                        [1.0, 0.5, 0.5]
                     } else if is_hovered {
                         [1.0, 1.0, 1.0]
                     } else {
-                        [0.91, 0.92, 0.95]
+                        [0.92, 0.93, 0.96]
                     };
                     if let Ok(lbl_b) = brush(col, 1.0) {
-                        target.DrawTextLayout(Vector2 { X: text_x, Y: text_y }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                        target.DrawTextLayout(Vector2 { X: card.left + 32.0, Y: row.rect.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
                     }
                 }
             }
 
-            // Group separators: thin 1px subtle lines exactly like native WindBet / Apple menus
-            if let Ok(sep) = brush([1.0, 1.0, 1.0], 0.08) {
-                let sep1_y = card.top + 5.0 + (ROW_H * 5.0) + 3.5;
-                target.DrawLine(Vector2 { X: card.left + 8.0, Y: sep1_y }, Vector2 { X: card.right - 8.0, Y: sep1_y }, &sep, 1.0, None);
-
-                let sep2_y = sep1_y + 7.0 + (ROW_H * 3.0);
-                target.DrawLine(Vector2 { X: card.left + 8.0, Y: sep2_y }, Vector2 { X: card.right - 8.0, Y: sep2_y }, &sep, 1.0, None);
+            // Тонкие разделители между группами
+            if let Ok(sep) = brush([1.0, 1.0, 1.0], 0.10) {
+                let sep1_y = card.top + PAD + ROW_H * 5.0 + SEP / 2.0;
+                let sep2_y = sep1_y + SEP + ROW_H * 3.0;
+                for y in [sep1_y, sep2_y] {
+                    target.DrawLine(Vector2 { X: card.left + 10.0, Y: y }, Vector2 { X: card.right - 10.0, Y: y }, &sep, 1.0, None);
+                }
             }
         }
     }
 
     fn draw_left_icon(&self, target: &ID2D1RenderTarget, kind: RowKind, row_rect: D2D_RECT_F, is_hovered: bool) {
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
-        let cx = MARGIN + 18.0;
+        let cx = MARGIN + 17.0;
         let cy = row_rect.top + ROW_H / 2.0;
 
         let col = if kind == RowKind::Quit && is_hovered {
@@ -384,7 +310,7 @@ impl PanelWindow {
         let Ok(b) = brush(col, alpha) else { return };
 
         // For checkmarks, bright WindBet cyan-white accent
-        let check_col = if is_hovered { [1.0, 1.0, 1.0] } else { [0.40, 0.76, 1.0] };
+        let check_col = [1.0, 1.0, 1.0];
         let Ok(check_b) = brush(check_col, 1.0) else { return };
 
         match kind {
@@ -566,7 +492,10 @@ impl PanelWindow {
                     w!("ru-ru"),
                 )
             })?;
-            let layout = self.text.CreateTextLayout(&units, &format, width, 40.0)?;
+            let layout = self.text.CreateTextLayout(&units, &format, width, ROW_H)?;
+            // Текст по центру строки по вертикали
+            let _ = layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             Ok(layout)
         }
     }
@@ -757,7 +686,7 @@ fn placement(at: POINT, width: f32, height: f32) -> (f32, POINT) {
         let win_x = card_x - (MARGIN * scale) as i32;
 
         // Vertically: snug 4px above the taskbar
-        let card_y = work.bottom - (4.0 * scale) as i32 - card_h;
+        let card_y = work.bottom - (8.0 * scale) as i32 - card_h;
         let win_y = (card_y - (MARGIN * scale) as i32).max(work.top + 8);
 
         (scale, POINT { x: win_x, y: win_y })
@@ -802,6 +731,90 @@ fn present(hwnd: HWND, size: (i32, i32), pixels: &[u8], position: Option<POINT>)
         }
         let _ = DeleteDC(memory);
         ReleaseDC(None, screen);
+    }
+}
+
+/// Вертикальный градиент сверху вниз: stops = (позиция 0..1, rgb, alpha)
+fn vertical_gradient(target: &ID2D1RenderTarget, x: f32, top: f32, bottom: f32, stops: &[(f32, [f32; 3], f32)]) -> Option<ID2D1LinearGradientBrush> {
+    unsafe {
+        let stops: Vec<D2D1_GRADIENT_STOP> = stops
+            .iter()
+            .map(|&(position, rgb, alpha)| D2D1_GRADIENT_STOP { position, color: color(rgb, alpha) })
+            .collect();
+        let collection = target.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP).ok()?;
+        let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+            startPoint: Vector2 { X: x, Y: top },
+            endPoint: Vector2 { X: x, Y: bottom },
+        };
+        target.CreateLinearGradientBrush(&props, None, &collection).ok()
+    }
+}
+
+/// Общая «жидкое стекло» карточка для панели и тоста:
+/// мягкая тень снаружи, полупрозрачный тёмный градиент, блик сверху, тонкая светлая рамка.
+pub(crate) fn draw_glass_card(target: &ID2D1RenderTarget, card: D2D_RECT_F, radius: f32) {
+    unsafe {
+        // Тень рисуем кольцами СНАРУЖИ карточки, чтобы она не просвечивала сквозь стекло
+        for step in 0..10 {
+            let t = 1.0 - step as f32 / 10.0;
+            let spread = 1.0 + step as f32;
+            let rect = D2D_RECT_F {
+                left: card.left - spread,
+                top: card.top - spread,
+                right: card.right + spread,
+                bottom: card.bottom + spread + 2.0,
+            };
+            if let Ok(shade) = target.CreateSolidColorBrush(&color([0.0, 0.0, 0.0], 0.075 * t * t), None) {
+                target.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT { rect, radiusX: radius + spread, radiusY: radius + spread },
+                    &shade,
+                    1.2,
+                    None,
+                );
+            }
+        }
+
+        let cx = (card.left + card.right) / 2.0;
+        let shape = D2D1_ROUNDED_RECT { rect: card, radiusX: radius, radiusY: radius };
+
+        // Тело стекла: тёмно-серый градиент, чуть светлее сверху
+        if let Some(body) = vertical_gradient(
+            target, cx, card.top, card.bottom,
+            &[(0.0, [0.20, 0.21, 0.25], 0.80), (1.0, [0.10, 0.11, 0.14], 0.88)],
+        ) {
+            target.FillRoundedRectangle(&shape, &body);
+        }
+
+        // Мягкий блик на верхней трети
+        let glow_rect = D2D_RECT_F {
+            left: card.left + 1.0,
+            top: card.top + 1.0,
+            right: card.right - 1.0,
+            bottom: card.top + (card.bottom - card.top) * 0.45,
+        };
+        if let Some(glow) = vertical_gradient(
+            target, cx, glow_rect.top, glow_rect.bottom,
+            &[(0.0, [1.0, 1.0, 1.0], 0.10), (1.0, [1.0, 1.0, 1.0], 0.0)],
+        ) {
+            target.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT { rect: glow_rect, radiusX: radius - 1.0, radiusY: radius - 1.0 },
+                &glow,
+            );
+        }
+
+        // Рамка: яркая сверху, почти пропадает снизу
+        let border_rect = D2D_RECT_F { left: card.left + 0.5, top: card.top + 0.5, right: card.right - 0.5, bottom: card.bottom - 0.5 };
+        if let Some(border) = vertical_gradient(
+            target, cx, card.top, card.bottom,
+            &[(0.0, [1.0, 1.0, 1.0], 0.30), (1.0, [1.0, 1.0, 1.0], 0.06)],
+        ) {
+            target.DrawRoundedRectangle(
+                &D2D1_ROUNDED_RECT { rect: border_rect, radiusX: radius - 0.5, radiusY: radius - 0.5 },
+                &border,
+                1.0,
+                None,
+            );
+        }
     }
 }
 
