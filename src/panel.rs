@@ -1,19 +1,23 @@
-//! Native Windows 11 / Apple style bottom tray context menu (Liquid Glass Direct2D layered window).
+//! Tray context panel: liquid-glass Direct2D layered window.
+//! Windows is the main target (real blurred backdrop + fade/slide animation);
+//! macOS / Linux presets live in `Theme` so the look is ready when the window code gets ported.
 
 use std::cell::RefCell;
 use std::mem::size_of;
 use std::rc::Rc;
+use std::time::Instant;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
-    DeleteObject, GetDC, GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC, SelectObject,
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC,
+    SRCCOPY, SelectObject,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapCacheOnLoad,
@@ -31,15 +35,71 @@ use snowdrift::card::Language;
 use snowdrift::simulation::Snowfall;
 
 const CLASS: PCWSTR = w!("SnowdriftPanel");
-const WIDTH: f32 = 212.0;
-const MARGIN: f32 = 14.0; // прозрачное поле вокруг карточки под тень
-const ROW_H: f32 = 25.0;
-const PAD: f32 = 6.0; // внутренний отступ сверху/снизу
-const SEP: f32 = 9.0; // высота разделителя между группами
-const RADIUS: f32 = 12.0;
-// 11 строк + 2 разделителя — высота считается сама, ничего подгонять руками не надо
-const HEIGHT: f32 = PAD * 2.0 + ROW_H * 11.0 + SEP * 2.0;
+const MARGIN: f32 = 14.0; // transparent margin around the card (shadow lives here)
+const ROW_COUNT: f32 = 11.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const ANIM_TIMER: usize = 201;
+const ANIM_MS: f32 = 180.0;
+const ANIM_SLIDE: f32 = 12.0; // px the panel travels while appearing
+const CURSOR_GAP: f32 = 10.0; // distance between the mouse and the panel
+
+/// Per-platform look. Windows is the one that is actually used right now.
+#[derive(Clone, Copy)]
+struct Theme {
+    width: f32,
+    row_h: f32,
+    pad: f32,
+    sep: f32,
+    radius: f32,
+    hover_radius: f32,
+    font: PCWSTR,
+    font_size: f32,
+    hover_fill: [f32; 3],
+    hover_alpha: f32,
+    blur_radius: f32,        // backdrop blur, px at 100% scale
+    tint: (f32, f32),        // body tint alpha (top, bottom) when the backdrop is blurred
+}
+
+impl Theme {
+    fn windows() -> Self {
+        Theme {
+            width: 248.0, row_h: 25.0, pad: 6.0, sep: 9.0, radius: 12.0, hover_radius: 6.0,
+            font: w!("Segoe UI Variable Text"), font_size: 12.0,
+            hover_fill: [1.0, 1.0, 1.0], hover_alpha: 0.09,
+            blur_radius: 7.0, tint: (0.58, 0.70),
+        }
+    }
+    fn mac() -> Self {
+        // macOS menu: tighter rows, accent-colored selection, stronger blur
+        Theme {
+            width: 236.0, row_h: 22.0, pad: 5.0, sep: 11.0, radius: 10.0, hover_radius: 5.0,
+            font: w!("SF Pro Text"), font_size: 12.5,
+            hover_fill: [0.04, 0.52, 1.0], hover_alpha: 1.0,
+            blur_radius: 9.0, tint: (0.50, 0.62),
+        }
+    }
+    fn linux() -> Self {
+        // GNOME-like: smaller radius, soft hover
+        Theme {
+            width: 240.0, row_h: 26.0, pad: 6.0, sep: 9.0, radius: 8.0, hover_radius: 6.0,
+            font: w!("Cantarell"), font_size: 12.0,
+            hover_fill: [1.0, 1.0, 1.0], hover_alpha: 0.11,
+            blur_radius: 6.0, tint: (0.64, 0.76),
+        }
+    }
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::mac()
+        } else if cfg!(target_os = "linux") {
+            Self::linux()
+        } else {
+            Self::windows()
+        }
+    }
+    fn height(&self) -> f32 {
+        self.pad * 2.0 + self.row_h * ROW_COUNT + self.sep * 2.0
+    }
+}
 
 pub enum PanelAction {
     Snowfall(Snowfall),
@@ -79,6 +139,12 @@ struct PanelWindow {
     hwnd: HWND,
     size: (i32, i32),
     scale: f32,
+    theme: Theme,
+    origin: POINT,       // final window position
+    slide_dir: i32,      // +1: slides up (panel is above the mouse), -1: slides down
+    anim: Option<Instant>,
+    pixels: Vec<u8>,     // last rendered frame, reused while animating
+    backdrop: Option<Vec<u8>>, // blurred screenshot of what is behind the panel
     settings: Settings,
     login: bool,
     hovered: Option<RowKind>,
@@ -100,6 +166,7 @@ pub fn show(at: POINT, settings: Settings, login: bool, on_action: impl Fn(Panel
             p.login = login;
             p.on_action = Rc::new(Box::new(on_action));
             p.reposition(at);
+            p.start_anim();
             p.paint_and_present();
             unsafe {
                 let _ = ShowWindow(p.hwnd, SW_SHOW);
@@ -108,6 +175,7 @@ pub fn show(at: POINT, settings: Settings, login: bool, on_action: impl Fn(Panel
             return;
         }
         if let Ok(mut new_panel) = PanelWindow::new(at, settings, login, Box::new(on_action)) {
+            new_panel.start_anim();
             new_panel.paint_and_present();
             unsafe {
                 let _ = ShowWindow(new_panel.hwnd, SW_SHOW);
@@ -121,6 +189,7 @@ pub fn show(at: POINT, settings: Settings, login: bool, on_action: impl Fn(Panel
 pub fn close() {
     if let Some(p) = PANEL.take() {
         unsafe {
+            let _ = KillTimer(Some(p.hwnd), ANIM_TIMER);
             let _ = DestroyWindow(p.hwnd);
         }
     }
@@ -133,12 +202,14 @@ pub fn is_open() -> bool {
 impl PanelWindow {
     fn new(at: POINT, settings: Settings, login: bool, on_action: Box<dyn Fn(PanelAction)>) -> Result<Self> {
         let _ = register_class();
-        let (scale, origin) = placement(at, WIDTH, HEIGHT);
-        let size = (((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32, ((HEIGHT + 2.0 * MARGIN) * scale).ceil() as i32);
+        let theme = Theme::current();
+        let (scale, origin, above) = placement(at, theme.width, theme.height());
+        let size = window_size(&theme, scale);
 
         unsafe {
             let imaging: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
 
+            // Created hidden, so the screenshot below does not contain the panel itself
             let hwnd = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 CLASS,
@@ -154,10 +225,22 @@ impl PanelWindow {
                 None,
             )?;
 
+            let backdrop = capture_backdrop(origin, size).map(|mut px| {
+                let r = ((theme.blur_radius * scale) as usize).max(2);
+                blur(&mut px, size.0 as usize, size.1 as usize, r, 3);
+                px
+            });
+
             let mut panel = PanelWindow {
                 hwnd,
                 size,
                 scale,
+                theme,
+                origin,
+                slide_dir: if above { 1 } else { -1 },
+                anim: None,
+                pixels: Vec::new(),
+                backdrop,
                 settings,
                 login,
                 hovered: None,
@@ -173,26 +256,60 @@ impl PanelWindow {
     }
 
     fn reposition(&mut self, at: POINT) {
-        let (scale, origin) = placement(at, WIDTH, HEIGHT);
+        let (scale, origin, above) = placement(at, self.theme.width, self.theme.height());
         self.scale = scale;
-        self.size = (((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32, ((HEIGHT + 2.0 * MARGIN) * scale).ceil() as i32);
+        self.origin = origin;
+        self.slide_dir = if above { 1 } else { -1 };
+        self.size = window_size(&self.theme, scale);
         unsafe {
-            let _ = SetWindowPos(
-                self.hwnd,
-                Some(HWND_TOPMOST),
-                origin.x,
-                origin.y,
-                self.size.0,
-                self.size.1,
-                SWP_NOACTIVATE,
-            );
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), origin.x, origin.y, self.size.0, self.size.1, SWP_NOACTIVATE);
         }
     }
 
+    // ───────── animation: fade in + slide away from the mouse ─────────
+
+    fn start_anim(&mut self) {
+        self.anim = Some(Instant::now());
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), ANIM_TIMER, 8, None);
+        }
+    }
+
+    /// (window alpha, vertical offset in px) for the current moment of the animation
+    fn anim_state(&self) -> (u8, i32) {
+        let Some(start) = self.anim else { return (255, 0) };
+        let t = (start.elapsed().as_secs_f32() * 1000.0 / ANIM_MS).min(1.0);
+        let e = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+        ((e * 255.0) as u8, ((1.0 - e) * ANIM_SLIDE * self.scale) as i32 * self.slide_dir)
+    }
+
+    fn tick_anim(&mut self) {
+        let Some(start) = self.anim else { return };
+        let done = start.elapsed().as_secs_f32() * 1000.0 >= ANIM_MS;
+        if done {
+            self.anim = None;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), ANIM_TIMER);
+            }
+        }
+        self.present_current();
+    }
+
+    /// Pushes the cached frame to the screen with the current animation alpha / offset (no re-render)
+    fn present_current(&self) {
+        if self.pixels.is_empty() {
+            return;
+        }
+        let (alpha, dy) = self.anim_state();
+        let position = POINT { x: self.origin.x, y: self.origin.y + dy };
+        present(self.hwnd, self.size, &self.pixels, Some(position), alpha);
+    }
+
     fn build_rows(&mut self) {
+        let t = self.theme;
         let rx = MARGIN + 4.0;
-        let row_w = WIDTH - 8.0;
-        let mut y = MARGIN + PAD;
+        let row_w = t.width - 8.0;
+        let mut y = MARGIN + t.pad;
 
         self.rows.clear();
 
@@ -203,14 +320,14 @@ impl PanelWindow {
         ];
         for (i, group) in groups.iter().enumerate() {
             if i > 0 {
-                y += SEP;
+                y += t.sep;
             }
             for &kind in group.iter() {
                 self.rows.push(Row {
                     kind,
-                    rect: D2D_RECT_F { left: rx, top: y, right: rx + row_w, bottom: y + ROW_H },
+                    rect: D2D_RECT_F { left: rx, top: y, right: rx + row_w, bottom: y + t.row_h },
                 });
-                y += ROW_H;
+                y += t.row_h;
             }
         }
     }
@@ -239,43 +356,60 @@ impl PanelWindow {
 
             let mut pixels = vec![0u8; (width * height * 4) as usize];
             if bitmap.CopyPixels(std::ptr::null(), (width * 4) as u32, &mut pixels).is_ok() {
-                present(self.hwnd, self.size, &pixels, None);
+                self.pixels = pixels;
+                self.present_current();
             }
         }
     }
 
     fn draw(&self, target: &ID2D1RenderTarget) {
-        let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + WIDTH, bottom: MARGIN + HEIGHT };
+        let t = self.theme;
+        let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + t.width, bottom: MARGIN + t.height() };
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
 
-        draw_glass_card(target, card, RADIUS);
+        // Blurred screenshot of the desktop behind the panel (1 bitmap px == 1 window px)
+        let backdrop = self.backdrop.as_ref().and_then(|px| unsafe {
+            target
+                .CreateBitmap(
+                    D2D_SIZE_U { width: self.size.0 as u32, height: self.size.1 as u32 },
+                    Some(px.as_ptr().cast()),
+                    (self.size.0 * 4) as u32,
+                    &D2D1_BITMAP_PROPERTIES {
+                        pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                        dpiX: 96.0 * self.scale,
+                        dpiY: 96.0 * self.scale,
+                    },
+                )
+                .ok()
+        });
+        let tint = if backdrop.is_some() { t.tint } else { (0.80, 0.88) };
+        draw_glass_card(target, card, t.radius, backdrop.as_ref(), tint);
 
         unsafe {
             for row in &self.rows {
                 let is_hovered = self.hovered == Some(row.kind);
                 if is_hovered {
                     let item_rect = D2D_RECT_F { top: row.rect.top + 1.0, bottom: row.rect.bottom - 1.0, ..row.rect };
-                    // Нейтральная подсветка как в меню Windows 11, красная только для «Выход»
                     let (fill_col, fill_alpha) = if row.kind == RowKind::Quit {
-                        ([1.0, 0.35, 0.35], 0.16)
+                        ([1.0, 0.35, 0.35], 0.18)
                     } else {
-                        ([1.0, 1.0, 1.0], 0.09)
+                        (t.hover_fill, t.hover_alpha)
                     };
                     if let Ok(hover_b) = brush(fill_col, fill_alpha) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 6.0, radiusY: 6.0 }, &hover_b);
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: item_rect, radiusX: t.hover_radius, radiusY: t.hover_radius }, &hover_b);
                     }
                 }
 
                 self.draw_left_icon(target, row.kind, row.rect, is_hovered);
 
                 let label = self.row_label(row.kind);
-                if let Ok(lbl_layout) = self.text_layout(&label, 12.0, WIDTH - 40.0) {
+                if let Ok(lbl_layout) = self.text_layout(&label, t.font_size, t.width - 40.0) {
                     let col = if row.kind == RowKind::Quit && is_hovered {
-                        [1.0, 0.5, 0.5]
+                        [1.0, 0.55, 0.55]
                     } else if is_hovered {
                         [1.0, 1.0, 1.0]
                     } else {
-                        [0.92, 0.93, 0.96]
+                        [0.93, 0.94, 0.97]
                     };
                     if let Ok(lbl_b) = brush(col, 1.0) {
                         target.DrawTextLayout(Vector2 { X: card.left + 32.0, Y: row.rect.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
@@ -283,10 +417,10 @@ impl PanelWindow {
                 }
             }
 
-            // Тонкие разделители между группами
+            // Hairline separators between groups
             if let Ok(sep) = brush([1.0, 1.0, 1.0], 0.10) {
-                let sep1_y = card.top + PAD + ROW_H * 5.0 + SEP / 2.0;
-                let sep2_y = sep1_y + SEP + ROW_H * 3.0;
+                let sep1_y = card.top + t.pad + t.row_h * 5.0 + t.sep / 2.0;
+                let sep2_y = sep1_y + t.sep + t.row_h * 3.0;
                 for y in [sep1_y, sep2_y] {
                     target.DrawLine(Vector2 { X: card.left + 10.0, Y: y }, Vector2 { X: card.right - 10.0, Y: y }, &sep, 1.0, None);
                 }
@@ -297,7 +431,7 @@ impl PanelWindow {
     fn draw_left_icon(&self, target: &ID2D1RenderTarget, kind: RowKind, row_rect: D2D_RECT_F, is_hovered: bool) {
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
         let cx = MARGIN + 17.0;
-        let cy = row_rect.top + ROW_H / 2.0;
+        let cy = row_rect.top + self.theme.row_h / 2.0;
 
         let col = if kind == RowKind::Quit && is_hovered {
             [1.0, 0.45, 0.45]
@@ -473,17 +607,9 @@ impl PanelWindow {
     fn text_layout(&self, text: &str, size: f32, width: f32) -> Result<IDWriteTextLayout> {
         let units: Vec<u16> = text.encode_utf16().collect();
         unsafe {
-            let format = self.text.CreateTextFormat(
-                w!("Segoe UI Variable Text"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                size,
-                w!("ru-ru"),
-            ).or_else(|_| {
+            let make = |family: PCWSTR| {
                 self.text.CreateTextFormat(
-                    w!("Segoe UI"),
+                    family,
                     None,
                     DWRITE_FONT_WEIGHT_NORMAL,
                     DWRITE_FONT_STYLE_NORMAL,
@@ -491,9 +617,13 @@ impl PanelWindow {
                     size,
                     w!("ru-ru"),
                 )
-            })?;
-            let layout = self.text.CreateTextLayout(&units, &format, width, ROW_H)?;
-            // Текст по центру строки по вертикали
+            };
+            // Theme font first, then safe Windows fallbacks
+            let format = make(self.theme.font)
+                .or_else(|_| make(w!("Segoe UI Variable Text")))
+                .or_else(|_| make(w!("Segoe UI")))?;
+            let layout = self.text.CreateTextLayout(&units, &format, width, self.theme.row_h)?;
+            // Vertically centered in the row, never wraps
             let _ = layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             Ok(layout)
@@ -589,6 +719,14 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             close();
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == ANIM_TIMER => {
+            PANEL.with_borrow_mut(|panel| {
+                if let Some(p) = panel.as_mut() {
+                    p.tick_anim();
+                }
+            });
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -650,9 +788,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             }
             LRESULT(0)
         }
-        WM_DESTROY => {
-            LRESULT(0)
-        }
+        WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
@@ -665,13 +801,31 @@ fn contains(rect: &D2D_RECT_F, (x, y): (f32, f32)) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
 
-fn placement(at: POINT, width: f32, height: f32) -> (f32, POINT) {
+fn window_size(theme: &Theme, scale: f32) -> (i32, i32) {
+    (
+        ((theme.width + 2.0 * MARGIN) * scale).ceil() as i32,
+        ((theme.height() + 2.0 * MARGIN) * scale).ceil() as i32,
+    )
+}
+
+/// Puts the card right above the mouse (centered on it). If there is no room above,
+/// it opens below the mouse. Never overlaps the taskbar. Returns (dpi scale, window origin, opened_above).
+fn placement(at: POINT, width: f32, height: f32) -> (f32, POINT, bool) {
     unsafe {
-        let mut cursor = at;
-        if cursor.x == 0 && cursor.y == 0 {
-            let _ = GetCursorPos(&mut cursor);
-        }
-        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        // Real mouse position = where the user just clicked. The tray anchor is only used when the
+        // menu was opened from the keyboard (mouse is far away from the tray icon).
+        let mut cursor = POINT::default();
+        let have_cursor = GetCursorPos(&mut cursor).is_ok();
+        let anchor_set = at.x != 0 || at.y != 0;
+        let pos = if !have_cursor {
+            at
+        } else if anchor_set && ((at.x - cursor.x).abs() > 300 || (at.y - cursor.y).abs() > 300) {
+            at
+        } else {
+            cursor
+        };
+
+        let monitor = MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(monitor, &mut info);
         let (mut dpi, mut _y) = (96, 96);
@@ -680,20 +834,107 @@ fn placement(at: POINT, width: f32, height: f32) -> (f32, POINT) {
         let work = info.rcWork;
         let card_w = (width * scale).ceil() as i32;
         let card_h = (height * scale).ceil() as i32;
+        let edge = (8.0 * scale) as i32;
+        let gap = (CURSOR_GAP * scale) as i32;
 
-        // Horizontally: center the card on the cursor/click point, clamped within work area with 8px margin
-        let card_x = (cursor.x - card_w / 2).clamp(work.left + 8, work.right - card_w - 8);
-        let win_x = card_x - (MARGIN * scale) as i32;
+        // Horizontally: centered on the mouse, kept inside the work area
+        let min_x = work.left + edge;
+        let max_x = (work.right - card_w - edge).max(min_x);
+        let card_x = (pos.x - card_w / 2).clamp(min_x, max_x);
 
-        // Vertically: snug 4px above the taskbar
-        let card_y = work.bottom - (8.0 * scale) as i32 - card_h;
-        let win_y = (card_y - (MARGIN * scale) as i32).max(work.top + 8);
+        // Vertically: above the mouse (but not lower than the taskbar edge)
+        let bottom = (pos.y - gap).min(work.bottom - edge);
+        let mut card_y = bottom - card_h;
+        let mut above = true;
+        if card_y < work.top + edge {
+            // no room above -> open below the mouse
+            above = false;
+            let max_y = (work.bottom - card_h - edge).max(work.top + edge);
+            card_y = (pos.y + gap).clamp(work.top + edge, max_y);
+        }
 
-        (scale, POINT { x: win_x, y: win_y })
+        let m = (MARGIN * scale) as i32;
+        (scale, POINT { x: card_x - m, y: card_y - m }, above)
     }
 }
 
-fn present(hwnd: HWND, size: (i32, i32), pixels: &[u8], position: Option<POINT>) {
+/// Screenshot of the screen area under the (still hidden) panel window, BGRA, alpha forced to 255.
+fn capture_backdrop(origin: POINT, size: (i32, i32)) -> Option<Vec<u8>> {
+    unsafe {
+        let screen = GetDC(None);
+        let memory = CreateCompatibleDC(Some(screen));
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: size.0,
+                biHeight: -size.1,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        let mut out = None;
+        if let Ok(bitmap) = CreateDIBSection(Some(memory), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+            let previous = SelectObject(memory, HGDIOBJ(bitmap.0));
+            if BitBlt(memory, 0, 0, size.0, size.1, Some(screen), origin.x, origin.y, SRCCOPY | CAPTUREBLT).is_ok() && !bits.is_null() {
+                let len = (size.0 * size.1 * 4) as usize;
+                let mut px = std::slice::from_raw_parts(bits.cast::<u8>() as *const u8, len).to_vec();
+                for a in px.chunks_exact_mut(4) {
+                    a[3] = 255;
+                }
+                out = Some(px);
+            }
+            SelectObject(memory, previous);
+            let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        }
+        let _ = DeleteDC(memory);
+        ReleaseDC(None, screen);
+        out
+    }
+}
+
+/// Cheap gaussian-ish blur: `passes` x (horizontal + vertical) box blur on the BGR channels.
+fn blur(pixels: &mut [u8], w: usize, h: usize, radius: usize, passes: usize) {
+    if w == 0 || h == 0 || pixels.len() < w * h * 4 {
+        return;
+    }
+    let mut tmp = vec![0u8; pixels.len()];
+    for _ in 0..passes {
+        blur_pass(pixels, &mut tmp, w, h, radius, true);
+        blur_pass(&tmp, pixels, w, h, radius, false);
+    }
+}
+
+fn blur_pass(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize, horizontal: bool) {
+    let (len, lines, step_i, step_l) = if horizontal { (w, h, 4, w * 4) } else { (h, w, w * 4, 4) };
+    let div = (2 * r + 1) as u32;
+    let last = len as isize - 1;
+    let r = r as isize;
+    for line in 0..lines {
+        let base = line * step_l;
+        for c in 0..3 {
+            let at = |i: isize| base + (i.clamp(0, last) as usize) * step_i + c;
+            let mut sum: u32 = 0;
+            for i in -r..=r {
+                sum += src[at(i)] as u32;
+            }
+            for i in 0..=last {
+                dst[base + (i as usize) * step_i + c] = (sum / div) as u8;
+                sum += src[at(i + r + 1)] as u32;
+                sum -= src[at(i - r)] as u32;
+            }
+        }
+        // alpha channel stays opaque
+        for i in 0..len {
+            dst[base + i * step_i + 3] = 255;
+        }
+    }
+}
+
+fn present(hwnd: HWND, size: (i32, i32), pixels: &[u8], position: Option<POINT>, alpha: u8) {
     unsafe {
         let screen = GetDC(None);
         let memory = CreateCompatibleDC(Some(screen));
@@ -713,7 +954,7 @@ fn present(hwnd: HWND, size: (i32, i32), pixels: &[u8], position: Option<POINT>)
         if let Ok(bitmap) = CreateDIBSection(Some(memory), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), pixels.len());
             let previous = SelectObject(memory, HGDIOBJ(bitmap.0));
-            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: alpha, AlphaFormat: AC_SRC_ALPHA as u8 };
             let size = SIZE { cx: size.0, cy: size.1 };
             let _ = UpdateLayeredWindow(
                 hwnd,
@@ -734,7 +975,7 @@ fn present(hwnd: HWND, size: (i32, i32), pixels: &[u8], position: Option<POINT>)
     }
 }
 
-/// Вертикальный градиент сверху вниз: stops = (позиция 0..1, rgb, alpha)
+/// Vertical gradient, top to bottom: stops = (position 0..1, rgb, alpha)
 fn vertical_gradient(target: &ID2D1RenderTarget, x: f32, top: f32, bottom: f32, stops: &[(f32, [f32; 3], f32)]) -> Option<ID2D1LinearGradientBrush> {
     unsafe {
         let stops: Vec<D2D1_GRADIENT_STOP> = stops
@@ -750,11 +991,11 @@ fn vertical_gradient(target: &ID2D1RenderTarget, x: f32, top: f32, bottom: f32, 
     }
 }
 
-/// Общая «жидкое стекло» карточка для панели и тоста:
-/// мягкая тень снаружи, полупрозрачный тёмный градиент, блик сверху, тонкая светлая рамка.
-pub(crate) fn draw_glass_card(target: &ID2D1RenderTarget, card: D2D_RECT_F, radius: f32) {
+/// Shared liquid-glass card (panel + toast): soft outer shadow, blurred backdrop (if given),
+/// dark tint, top highlight and a thin light border. `tint` = body alpha (top, bottom).
+pub(crate) fn draw_glass_card(target: &ID2D1RenderTarget, card: D2D_RECT_F, radius: f32, backdrop: Option<&ID2D1Bitmap>, tint: (f32, f32)) {
     unsafe {
-        // Тень рисуем кольцами СНАРУЖИ карточки, чтобы она не просвечивала сквозь стекло
+        // Shadow is drawn as rings OUTSIDE the card so it never shows through the glass
         for step in 0..10 {
             let t = 1.0 - step as f32 / 10.0;
             let spread = 1.0 + step as f32;
@@ -765,27 +1006,29 @@ pub(crate) fn draw_glass_card(target: &ID2D1RenderTarget, card: D2D_RECT_F, radi
                 bottom: card.bottom + spread + 2.0,
             };
             if let Ok(shade) = target.CreateSolidColorBrush(&color([0.0, 0.0, 0.0], 0.075 * t * t), None) {
-                target.DrawRoundedRectangle(
-                    &D2D1_ROUNDED_RECT { rect, radiusX: radius + spread, radiusY: radius + spread },
-                    &shade,
-                    1.2,
-                    None,
-                );
+                target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: radius + spread, radiusY: radius + spread }, &shade, 1.2, None);
             }
         }
 
         let cx = (card.left + card.right) / 2.0;
         let shape = D2D1_ROUNDED_RECT { rect: card, radiusX: radius, radiusY: radius };
 
-        // Тело стекла: тёмно-серый градиент, чуть светлее сверху
+        // Blurred desktop behind the glass
+        if let Some(bitmap) = backdrop {
+            if let Ok(bitmap_brush) = target.CreateBitmapBrush(bitmap, None, None) {
+                target.FillRoundedRectangle(&shape, &bitmap_brush);
+            }
+        }
+
+        // Dark tint, a bit lighter at the top
         if let Some(body) = vertical_gradient(
             target, cx, card.top, card.bottom,
-            &[(0.0, [0.20, 0.21, 0.25], 0.80), (1.0, [0.10, 0.11, 0.14], 0.88)],
+            &[(0.0, [0.20, 0.21, 0.25], tint.0), (1.0, [0.09, 0.10, 0.13], tint.1)],
         ) {
             target.FillRoundedRectangle(&shape, &body);
         }
 
-        // Мягкий блик на верхней трети
+        // Soft highlight on the upper part
         let glow_rect = D2D_RECT_F {
             left: card.left + 1.0,
             top: card.top + 1.0,
@@ -796,24 +1039,16 @@ pub(crate) fn draw_glass_card(target: &ID2D1RenderTarget, card: D2D_RECT_F, radi
             target, cx, glow_rect.top, glow_rect.bottom,
             &[(0.0, [1.0, 1.0, 1.0], 0.10), (1.0, [1.0, 1.0, 1.0], 0.0)],
         ) {
-            target.FillRoundedRectangle(
-                &D2D1_ROUNDED_RECT { rect: glow_rect, radiusX: radius - 1.0, radiusY: radius - 1.0 },
-                &glow,
-            );
+            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: glow_rect, radiusX: radius - 1.0, radiusY: radius - 1.0 }, &glow);
         }
 
-        // Рамка: яркая сверху, почти пропадает снизу
+        // Border: bright on top, fading out at the bottom
         let border_rect = D2D_RECT_F { left: card.left + 0.5, top: card.top + 0.5, right: card.right - 0.5, bottom: card.bottom - 0.5 };
         if let Some(border) = vertical_gradient(
             target, cx, card.top, card.bottom,
             &[(0.0, [1.0, 1.0, 1.0], 0.30), (1.0, [1.0, 1.0, 1.0], 0.06)],
         ) {
-            target.DrawRoundedRectangle(
-                &D2D1_ROUNDED_RECT { rect: border_rect, radiusX: radius - 0.5, radiusY: radius - 0.5 },
-                &border,
-                1.0,
-                None,
-            );
+            target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: border_rect, radiusX: radius - 0.5, radiusY: radius - 0.5 }, &border, 1.0, None);
         }
     }
 }

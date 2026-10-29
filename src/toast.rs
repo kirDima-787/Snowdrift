@@ -264,7 +264,7 @@ impl ToastWindow {
         let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + WIDTH, bottom: MARGIN + HEIGHT };
         let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
 
-        draw_glass_card(target, card, RADIUS);
+        draw_glass_card(target, card, RADIUS, None, (0.80, 0.88));
 
         unsafe {
             // Кнопка закрытия «×»
