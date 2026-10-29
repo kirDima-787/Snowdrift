@@ -289,7 +289,9 @@ impl Screen {
         if let Some(tracker) = windows {
             self.follow(tracker, clock, now);
         }
-        let changed = self.simulation.step(dt, self.cursor());
+        let (cursor_point, cursor_radius, wake_radius) = self.cursor_interaction();
+        self.simulation.set_cursor_radius(cursor_radius, wake_radius);
+        let changed = self.simulation.step(dt, cursor_point);
 
         let fastest = if budget == PowerBudget::Full { self.interactive_rate } else { self.interactive_rate.min(60) };
         let calm = if budget == PowerBudget::Saver {
@@ -414,13 +416,62 @@ impl Screen {
         self.layer.is_some()
     }
 
-    /// The pointer in overlay coordinates.
-    fn cursor(&self) -> V2 {
+    /// Dynamic cursor interaction area based on the active Windows cursor shape and size.
+    fn cursor_interaction(&self) -> (V2, f32, f32) {
         let mut point = POINT::default();
         if unsafe { GetCursorPos(&mut point) }.is_err() {
-            return V2::new(-10_000.0, -10_000.0);
+            return (V2::new(-10_000.0, -10_000.0), 14.0, 110.0);
         }
-        self.local(point.x as f32, point.y as f32)
+        let local = self.local(point.x as f32, point.y as f32);
+
+        let (mut radius, mut wake) = (14.0f32, 110.0f32);
+        unsafe {
+            let mut info = CURSORINFO {
+                cbSize: size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetCursorInfo(&mut info).is_ok() && (info.flags.0 & CURSOR_SHOWING.0 != 0) && !info.hCursor.is_invalid() {
+                let h = info.hCursor;
+                if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) && h == ibeam {
+                    // Delicate text cursor: smaller interaction radius
+                    radius = 8.0;
+                    wake = 65.0;
+                } else if let Ok(hand) = LoadCursorW(None, IDC_HAND) && h == hand {
+                    // Hand pointing cursor: larger interaction area
+                    radius = 20.0;
+                    wake = 145.0;
+                } else if let Ok(cross) = LoadCursorW(None, IDC_CROSS) && h == cross {
+                    radius = 12.0;
+                    wake = 90.0;
+                } else if let Ok(sizeall) = LoadCursorW(None, IDC_SIZEALL) && h == sizeall {
+                    radius = 24.0;
+                    wake = 165.0;
+                } else if let Ok(wait) = LoadCursorW(None, IDC_WAIT) && h == wait {
+                    radius = 18.0;
+                    wake = 130.0;
+                } else if let Ok(appstarting) = LoadCursorW(None, IDC_APPSTARTING) && h == appstarting {
+                    radius = 16.0;
+                    wake = 120.0;
+                } else if (LoadCursorW(None, IDC_SIZENS).map(|c| c == h).unwrap_or(false))
+                    || (LoadCursorW(None, IDC_SIZEWE).map(|c| c == h).unwrap_or(false))
+                    || (LoadCursorW(None, IDC_SIZENWSE).map(|c| c == h).unwrap_or(false))
+                    || (LoadCursorW(None, IDC_SIZENESW).map(|c| c == h).unwrap_or(false))
+                {
+                    // Resize double-headed arrows: wider interaction
+                    radius = 18.0;
+                    wake = 135.0;
+                }
+            }
+
+            let cx = GetSystemMetrics(SM_CXCURSOR);
+            if cx > 32 {
+                let scale = (cx as f32 / 32.0).clamp(1.0, 3.0);
+                radius *= scale;
+                wake *= scale;
+            }
+        }
+
+        (local, radius, wake)
     }
 
     /// A point in physical screen pixels in overlay coordinates: DIPs up from the bottom left of this display's work area.

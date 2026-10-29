@@ -21,7 +21,6 @@ const THAW_EXPONENT: f32 = 0.74;
 const DEPOSITION: f32 = 1.1;
 const REPOSE: f32 = 0.95;
 const ROUNDING: f32 = 0.08;
-const CURSOR_RADIUS: f32 = 14.0;
 const CURSOR_OFFSET: V2 = V2::new(4.0, -8.0);
 const GRAVITY: f32 = 2500.0;
 const GRAIN_DRAG: f32 = 0.8;
@@ -229,6 +228,8 @@ struct Air {
     windows_changed: bool,
     last_window_motion: f64,
     last_cursor_push: f64,
+    cursor_radius: f32,
+    wake_radius: f32,
     /// Snow released while the air is full, laid straight onto the ground at the end of the step.
     overflow: Vec<(f32, f32)>,
     gust: Option<Gust>,
@@ -301,12 +302,19 @@ impl SnowSimulation {
                 windows_changed: false,
                 last_window_motion: -10.0,
                 last_cursor_push: -10.0,
+                cursor_radius: 14.0,
+                wake_radius: 110.0,
                 overflow: Vec::new(),
                 gust: None,
             },
         };
         simulation.update_target();
         simulation
+    }
+
+    pub fn set_cursor_radius(&mut self, radius: f32, wake_radius: f32) {
+        self.air.cursor_radius = radius.clamp(6.0, 90.0);
+        self.air.wake_radius = wake_radius.clamp(40.0, 320.0);
     }
 
     pub fn width(&self) -> f32 {
@@ -628,10 +636,11 @@ impl SnowSimulation {
         }
         self.air.cursor_velocity += (velocity - self.air.cursor_velocity) * 0.75;
 
-        let low = center.y.min(previous.y) - CURSOR_RADIUS;
-        let high = center.y.max(previous.y) + CURSOR_RADIUS;
-        let left = center.x.min(previous.x) - CURSOR_RADIUS;
-        let right = center.x.max(previous.x) + CURSOR_RADIUS;
+        let radius = self.air.cursor_radius;
+        let low = center.y.min(previous.y) - radius;
+        let high = center.y.max(previous.y) + radius;
+        let left = center.x.min(previous.x) - radius;
+        let right = center.x.max(previous.x) + radius;
         let touched: Vec<usize> = (0..self.layers.len())
             .filter(|&li| {
                 let layer = &self.layers[li];
@@ -654,7 +663,7 @@ impl SnowSimulation {
             }
             return;
         }
-        let steps = (distance / (CURSOR_RADIUS * 0.5)) as usize + 1;
+        let steps = (distance / (radius * 0.5)) as usize + 1;
         for step in 1..=steps {
             let position = previous + delta * (step as f32 / steps as f32);
             for &li in &touched {
@@ -669,7 +678,7 @@ impl SnowSimulation {
         let wind = self.air.breeze();
         let follow = (dt * 1.2).min(1.0);
         let settle = (dt * 1.6).min(1.0);
-        let wake_radius: f32 = 110.0;
+        let wake_radius: f32 = self.air.wake_radius;
         let mut wake_velocity = self.air.cursor_velocity;
         let wake_speed = wake_velocity.length();
         if wake_speed > 1500.0 {
@@ -1308,7 +1317,7 @@ impl Air {
     }
 
     fn carve(&mut self, layer: &mut SnowLayer, li: usize, center: V2, velocity: V2, travel: f32, last: bool) {
-        let radius = CURSOR_RADIUS;
+        let radius = self.cursor_radius;
         let base = layer.base();
         let lower = (((center.x - radius - base.x) / COLUMN_WIDTH).floor() as i64).max(0);
         let upper = (((center.x + radius - base.x) / COLUMN_WIDTH).floor() as i64).min(layer.count() as i64 - 1);
