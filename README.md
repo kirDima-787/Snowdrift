@@ -11,72 +11,69 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/kirDima-787/Snowdrift/releases/latest/download/Snowdrift.dmg"><b>Download for macOS</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/kirDima-787/Snowdrift/releases/latest"><b>All Releases</b></a>
+  <a href="https://github.com/kirDima-787/Snowdrift/releases/latest/download/Snowdrift-linux-x86_64.tar.gz"><b>Download for Linux</b></a>
   <br>
   <sub>Windows 10 or 11 · macOS 14 or later · Linux · free and open source</sub>
 </p>
 
 https://github.com/user-attachments/assets/291c3cd5-3563-4b86-8b66-dfd924f980fc
 
-A lightweight desktop app that brings gentle snowfall to your screen. Soft snow drifts across your displays, settles along the tops of your windows, and slips off when you drag them. Sweep the drift aside with your cursor.
+A lightweight desktop app that brings gentle snowfall to your screen. Snow drifts across your displays, settles on open windows, slips off when they move, and sweeps aside with your cursor.
 
-## What the snow does
+## Features
 
-- **Falls.** Every flake keeps its own pace and sways in a slow breeze. Variable mode lets the snowfall rise and ease on its own throughout the day.
-- **Settles.** It piles up and slumps to a natural slope along the bottom of the screen, on the taskbar, and on any open window with room above it.
-- **Moves.** Push the cursor through a drift and it parts and sprays. Drag or shake a window and its snow slides off and lands below.
-- **Drops.** Close or minimize a window and its snow drops at once, bursting into powder where it lands.
-- **Melts.** With Melt Snow on, drifts thaw slowly so they never take over your screen.
-- **Hides.** Screenshots and screen sharing can show your desktop without it, unless you turn on Show in Screenshots.
-- **Rests.** Uses minimal hardware resources with Direct3D 11 / Metal rendering, automatically pausing when displays sleep or lock.
+- **Natural physics:** Flakes sway in a light breeze, settle into realistic drifts, and slide off windows as you drag or shake them.
+- **Interactive:** Push the cursor through drifts to sweep snow aside.
+- **Liquid glass:** Native acrylic menu with real backdrop blur, smooth slide animations, and quick toggles.
+- **Low footprint:** Hardware-accelerated rendering (Direct3D 11 / Metal), automatically pausing when screens sleep or lock.
+- **Bilingual:** Full English and Russian support with one-click switching.
 
-## Tray & Menu controls
+## Controls
 
-All settings are available directly from the liquid-glass tray menu on Windows and menu bar on macOS:
+All settings live in the system tray / menu bar:
 
-- **Snowfall:** Intensity options (Off, Light, Steady, Heavy, Variable).
-- **Accumulate:** Toggle piling snow into realistic drifts.
-- **Melt Snow:** Gradually melt settled snow over time.
-- **Snow on Windows:** Allow flakes to gather on top of active application windows.
-- **Clear Snow:** Instantly sweep all snow from the screen.
-- **Behind Windows:** Keep snowfall behind windows, directly on top of the wallpaper.
-- **Show in Screenshots:** Include or exclude snow from system screenshots and screen captures.
-- **Open at Login:** Automatically start Snowdrift when you log in.
-- **Language:** Switch interface language (English / Russian).
-- **Check for Updates:** Check for new releases and update with one click.
+- **Snowfall:** Off, Light, Steady, Heavy, Variable
+- **Accumulate:** Build drifts on taskbar and windows
+- **Melt Snow:** Gradually melt settled drifts
+- **Snow on Windows:** Allow snow on window headers
+- **Clear Snow:** Instantly wipe all snow
+- **Behind Windows:** Keep snow behind active windows
+- **Show in Screenshots:** Include or hide snow in screen captures
+- **Open at Login:** Start automatically with the system
+- **Language:** English / Russian
+- **Check for Updates:** In-app updates via toast notifications
 
-## Building from source
+## Building
 
-### Windows
 ```sh
+# Windows
 cargo build --release --bin Snowdrift
-```
 
-### macOS
-```sh
+# macOS
 ./build-macos.sh
-```
 
-### Linux
-```sh
+# Linux
 cargo build --release --bin Snowdrift
 ```
 
 ---
 
-## Русская версия
+## О проекте (RU)
 
-Snowdrift — красивый и легковесный падающий снег на рабочем столе для Windows, macOS и Linux.
+Snowdrift - легкий и атмосферный падающий снег на рабочем столе для Windows, macOS и Linux.
 
-Снежинки мягко кружатся на экране, оседают на панели задач и верхних гранях открытых окон, тают со временем и разлетаются в стороны при движении курсора мыши.
+Снежинки плавно кружатся на экране, ложатся в сугробы на панели задач и открытых окнах, тают и разлетаются от движения курсора. Меню и карточки уведомлений выполнены в стиле Liquid Glass с размытием фона и плавной анимацией.
 
-### Основные возможности
+### Быстрый старт
+1. Скачайте нужный файл в блоке ссылок выше.
+2. Запустите приложение - иконка снежинки появится в системном трее Windows (или строке меню macOS).
+3. Кликните по иконке для настройки интенсивности снега, физики сугробов и языка интерфейса.
 
-- **Физика сугробов:** Снег ложится на поверхности с естественным углом откоса.
-- **Интерактивность:** Курсор разгребает сугробы, а перемещение или закрытие окон стряхивает скопившийся снег вниз.
-- **Жидкое стекло:** Меню управления и уведомления об обновлениях выполнены в стиле Liquid Glass с размытием фона и плавной анимацией.
-- **Двуязычный интерфейс:** Полная поддержка русского и английского языков с переключением в один клик.
-- **Автообновление:** Проверка и установка новых версий прямо через системное уведомление.
+---
+
+## Acknowledgements
+
+Inspired by [Snowhush](https://github.com/mbezruchko/Snowhush) and adapted with Liquid Glass aesthetics, native Windows/Linux enhancements, and Russian localization.
 
 ## License
 
