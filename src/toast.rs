@@ -28,14 +28,14 @@ use windows_numerics::Vector2;
 use crate::panel::draw_glass_card;
 
 const CLASS: PCWSTR = w!("SnowdriftToast");
-const WIDTH: f32 = 320.0;
-const HEIGHT: f32 = 64.0; // одна фиксированная высота на все состояния, ничего не прыгает
-const MARGIN: f32 = 14.0;
+const WIDTH: f32 = 364.0; // same width as a native Windows 11 toast
+const MARGIN: f32 = 14.0; // transparent margin for the shadow
 const RADIUS: f32 = 12.0;
-const EDGE_GAP: f32 = 12.0; // отступ карточки от края экрана / панели задач
+const EDGE_GAP: f32 = 16.0; // gap between the card and the screen edge / taskbar
 const TIMER_CLOSE: usize = 101;
 const TIMER_PULSE: usize = 102;
 const ICON_BYTES: &[u8] = include_bytes!("../assets/icon-256.png");
+const ACCENT: [f32; 3] = [0.38, 0.80, 1.0]; // Windows 11 dark-mode accent
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToastState {
@@ -52,6 +52,23 @@ pub struct ToastCallbacks {
     pub on_close: Box<dyn Fn()>,
 }
 
+/// Card height like a native toast: grows with its content (2-line text, progress bar, buttons)
+fn card_height(state: &ToastState) -> f32 {
+    match state {
+        ToastState::Checking | ToastState::Downloading { .. } => 120.0,
+        ToastState::Available { .. } => 148.0,
+        ToastState::Error(_) => 124.0,
+        ToastState::UpToDate(_) | ToastState::Downloaded => 106.0,
+    }
+}
+
+fn window_size(state: &ToastState, scale: f32) -> (i32, i32) {
+    (
+        ((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32,
+        ((card_height(state) + 2.0 * MARGIN) * scale).ceil() as i32,
+    )
+}
+
 struct ToastWindow {
     hwnd: HWND,
     size: (i32, i32),
@@ -59,9 +76,13 @@ struct ToastWindow {
     state: ToastState,
     is_ru: bool,
     hover_close: bool,
+    hover_more: bool,
     hover_btn: bool,
+    hover_dismiss: bool,
     btn_rect: Option<D2D_RECT_F>,
+    dismiss_rect: Option<D2D_RECT_F>,
     close_rect: D2D_RECT_F,
+    more_rect: D2D_RECT_F,
     callbacks: Option<Rc<ToastCallbacks>>,
     pulse_tick: u32,
     d2d: ID2D1Factory,
@@ -106,6 +127,7 @@ pub fn update_progress(percent: u32, downloaded: u32, total: u32) {
     TOAST.with_borrow_mut(|toast| {
         let Some(t) = toast.as_mut() else { return };
         t.state = ToastState::Downloading { percent, downloaded, total };
+        t.sync_size();
         t.paint_and_present();
     });
 }
@@ -114,6 +136,7 @@ pub fn update_state(state: ToastState) {
     TOAST.with_borrow_mut(|toast| {
         let Some(t) = toast.as_mut() else { return };
         t.state = state;
+        t.sync_size();
         t.schedule_timer();
         t.paint_and_present();
     });
@@ -135,8 +158,8 @@ pub fn close() {
 impl ToastWindow {
     fn new(state: ToastState, is_ru: bool, callbacks: Rc<ToastCallbacks>) -> Result<Self> {
         let _ = register_class();
-        let (scale, origin) = placement(WIDTH, HEIGHT);
-        let size = (((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32, ((HEIGHT + 2.0 * MARGIN) * scale).ceil() as i32);
+        let (scale, origin) = placement(WIDTH, card_height(&state));
+        let size = window_size(&state, scale);
 
         unsafe {
             let imaging: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
@@ -170,11 +193,12 @@ impl ToastWindow {
                 None,
             )?;
 
-            let close_rect = D2D_RECT_F {
-                left: MARGIN + WIDTH - 30.0,
-                top: MARGIN + 6.0,
-                right: MARGIN + WIDTH - 8.0,
-                bottom: MARGIN + 28.0,
+            // Header buttons (28x28, centered 27px / 67px from the right edge, 23px from the top)
+            let header_btn = |center_from_right: f32| D2D_RECT_F {
+                left: MARGIN + WIDTH - center_from_right - 14.0,
+                top: MARGIN + 9.0,
+                right: MARGIN + WIDTH - center_from_right + 14.0,
+                bottom: MARGIN + 37.0,
             };
 
             Ok(ToastWindow {
@@ -184,9 +208,13 @@ impl ToastWindow {
                 state,
                 is_ru,
                 hover_close: false,
+                hover_more: false,
                 hover_btn: false,
+                hover_dismiss: false,
                 btn_rect: None,
-                close_rect,
+                dismiss_rect: None,
+                close_rect: header_btn(27.0),
+                more_rect: header_btn(67.0),
                 callbacks: Some(callbacks),
                 pulse_tick: 0,
                 d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
@@ -198,19 +226,18 @@ impl ToastWindow {
     }
 
     fn reposition(&mut self) {
-        let (scale, origin) = placement(WIDTH, HEIGHT);
+        let (scale, origin) = placement(WIDTH, card_height(&self.state));
         self.scale = scale;
-        self.size = (((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32, ((HEIGHT + 2.0 * MARGIN) * scale).ceil() as i32);
+        self.size = window_size(&self.state, scale);
         unsafe {
-            let _ = SetWindowPos(
-                self.hwnd,
-                Some(HWND_TOPMOST),
-                origin.x,
-                origin.y,
-                self.size.0,
-                self.size.1,
-                SWP_NOACTIVATE,
-            );
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), origin.x, origin.y, self.size.0, self.size.1, SWP_NOACTIVATE);
+        }
+    }
+
+    /// The card height depends on the state (progress bar / buttons) — resize only when it changes
+    fn sync_size(&mut self) {
+        if window_size(&self.state, self.scale) != self.size {
+            self.reposition();
         }
     }
 
@@ -220,8 +247,8 @@ impl ToastWindow {
             let _ = KillTimer(Some(self.hwnd), TIMER_PULSE);
             match &self.state {
                 ToastState::UpToDate(_) | ToastState::Error(_) => {
-                    // Auto-close after 4.5 seconds
-                    let _ = SetTimer(Some(self.hwnd), TIMER_CLOSE, 4500, None);
+                    // Auto-close after 5 seconds, like a native toast
+                    let _ = SetTimer(Some(self.hwnd), TIMER_CLOSE, 5000, None);
                 }
                 ToastState::Checking => {
                     let _ = SetTimer(Some(self.hwnd), TIMER_PULSE, 40, None);
@@ -260,142 +287,140 @@ impl ToastWindow {
         }
     }
 
-    fn draw(&mut self, target: &ID2D1RenderTarget) {
-        let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + WIDTH, bottom: MARGIN + HEIGHT };
-        let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
+    /// (title, body) text for the current state
+    fn texts(&self) -> (String, String) {
+        let ru = self.is_ru;
+        match &self.state {
+            ToastState::Checking => (
+                if ru { "Проверка обновлений" } else { "Checking for updates" }.into(),
+                if ru { "Поиск новой версии…" } else { "Looking for a new version…" }.into(),
+            ),
+            ToastState::UpToDate(ver) => (
+                if ru { "Обновление не требуется" } else { "You're up to date" }.into(),
+                if ru { format!("Установлена последняя версия ({ver})") } else { format!("You have the latest version ({ver})") },
+            ),
+            ToastState::Available { version, .. } => (
+                if ru { format!("Доступна версия {version}") } else { format!("Version {version} is available") },
+                if ru { "Готово к установке".into() } else { "Ready to install".into() },
+            ),
+            ToastState::Downloading { percent, downloaded, total } => {
+                let dl = *downloaded as f32 / (1024.0 * 1024.0);
+                let tot = *total as f32 / (1024.0 * 1024.0);
+                let body = match (*total > 0, ru) {
+                    (true, true) => format!("{dl:.1} МБ из {tot:.1} МБ"),
+                    (true, false) => format!("{dl:.1} MB of {tot:.1} MB"),
+                    (false, true) => format!("{dl:.1} МБ скачано"),
+                    (false, false) => format!("{dl:.1} MB downloaded"),
+                };
+                (if ru { format!("Скачивание обновления: {percent}%") } else { format!("Downloading update: {percent}%") }, body)
+            }
+            ToastState::Downloaded => (
+                if ru { "Обновление готово" } else { "Update ready" }.into(),
+                if ru { "Запуск программы установки…" } else { "Launching the installer…" }.into(),
+            ),
+            ToastState::Error(err) => {
+                let short: String = if err.chars().count() > 100 { err.chars().take(99).collect::<String>() + "…" } else { err.clone() };
+                (if ru { "Ошибка обновления" } else { "Update failed" }.into(), short)
+            }
+        }
+    }
 
-        draw_glass_card(target, card, RADIUS, None, (0.80, 0.88));
+    fn draw(&mut self, target: &ID2D1RenderTarget) {
+        let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + WIDTH, bottom: MARGIN + card_height(&self.state) };
+        let brush = |rgb: [f32; 3], alpha: f32| unsafe { target.CreateSolidColorBrush(&color(rgb, alpha), None) };
+        let (title, body) = self.texts();
+
+        // Native toasts are almost opaque dark acrylic
+        draw_glass_card(target, card, RADIUS, None, (0.90, 0.94));
 
         unsafe {
-            // Кнопка закрытия «×»
-            let cx = (self.close_rect.left + self.close_rect.right) / 2.0;
-            let cy = (self.close_rect.top + self.close_rect.bottom) / 2.0;
-            if self.hover_close {
-                if let Ok(hover_bg) = brush([1.0, 1.0, 1.0], 0.12) {
-                    target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: self.close_rect, radiusX: 6.0, radiusY: 6.0 }, &hover_bg);
+            // ── Header: app icon + app name, "···" and "×" on the right ──
+            self.draw_app_icon(target, D2D_RECT_F { left: card.left + 14.0, top: card.top + 15.0, right: card.left + 30.0, bottom: card.top + 31.0 });
+            self.draw_text(target, "Snowdrift", card.left + 40.0, card.top + 15.0, 200.0, 16.0, 12.0, DWRITE_FONT_WEIGHT_NORMAL, [0.90, 0.90, 0.92], 0.95, true);
+
+            for (rect, hovered, is_close) in [(self.more_rect, self.hover_more, false), (self.close_rect, self.hover_close, true)] {
+                if hovered {
+                    if let Ok(h) = brush([1.0, 1.0, 1.0], 0.09) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 5.0, radiusY: 5.0 }, &h);
+                    }
+                }
+                let (cx, cy) = ((rect.left + rect.right) / 2.0, (rect.top + rect.bottom) / 2.0);
+                if let Ok(b) = brush([1.0, 1.0, 1.0], if hovered { 1.0 } else { 0.85 }) {
+                    if is_close {
+                        let arm = 4.2;
+                        target.DrawLine(Vector2 { X: cx - arm, Y: cy - arm }, Vector2 { X: cx + arm, Y: cy + arm }, &b, 1.1, None);
+                        target.DrawLine(Vector2 { X: cx - arm, Y: cy + arm }, Vector2 { X: cx + arm, Y: cy - arm }, &b, 1.1, None);
+                    } else {
+                        for dx in [-5.0f32, 0.0, 5.0] {
+                            target.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx + dx, Y: cy }, radiusX: 1.15, radiusY: 1.15 }, &b);
+                        }
+                    }
                 }
             }
-            let cross_color = if self.hover_close { [1.0, 1.0, 1.0] } else { [0.72, 0.73, 0.78] };
-            if let Ok(cross_b) = brush(cross_color, 0.9) {
-                let arm = 3.6;
-                target.DrawLine(Vector2 { X: cx - arm, Y: cy - arm }, Vector2 { X: cx + arm, Y: cy + arm }, &cross_b, 1.3, None);
-                target.DrawLine(Vector2 { X: cx - arm, Y: cy + arm }, Vector2 { X: cx + arm, Y: cy - arm }, &cross_b, 1.3, None);
-            }
+
+            // ── Title and body ──
+            self.draw_text(target, &title, card.left + 16.0, card.top + 48.0, WIDTH - 32.0, 22.0, 14.0, DWRITE_FONT_WEIGHT_NORMAL, [1.0, 1.0, 1.0], 1.0, false);
+            self.draw_text(target, &body, card.left + 16.0, card.top + 70.0, WIDTH - 32.0, 40.0, 13.0, DWRITE_FONT_WEIGHT_NORMAL, [0.80, 0.80, 0.83], 0.95, false);
 
             self.btn_rect = None;
-
-            // Слот слева (24x24), текст справа от него
-            let slot = D2D_RECT_F { left: card.left + 14.0, top: card.top + 15.0, right: card.left + 38.0, bottom: card.top + 39.0 };
-            let slot_c = Vector2 { X: (slot.left + slot.right) / 2.0, Y: (slot.top + slot.bottom) / 2.0 };
-            let text_x = card.left + 48.0;
-            let text_y = card.top + 11.0;
-            let text_w = WIDTH - 48.0 - 36.0;
-            let bar_left = card.left + 14.0;
-            let bar_w = WIDTH - 28.0;
-            let bar_top = card.top + 53.0;
+            self.dismiss_rect = None;
+            let bar_left = card.left + 16.0;
+            let bar_w = WIDTH - 32.0;
+            let bar_top = card.top + 98.0;
 
             match &self.state {
                 ToastState::Checking => {
-                    self.draw_app_icon(target, slot);
-                    let title = if self.is_ru { "Проверка обновлений…" } else { "Checking for updates…" };
-                    let sub = if self.is_ru { "Поиск новой версии…" } else { "Connecting to GitHub…" };
-                    self.draw_text_pair(target, text_x, text_y, text_w, title, sub);
-
-                    let track = D2D_RECT_F { left: bar_left, top: bar_top, right: bar_left + bar_w, bottom: bar_top + 3.0 };
-                    if let Ok(track_b) = brush([1.0, 1.0, 1.0], 0.10) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: track, radiusX: 1.5, radiusY: 1.5 }, &track_b);
-                    }
-                    let seg_w = 60.0;
-                    let offset = ((self.pulse_tick as f32 * 3.5) % (bar_w + seg_w)) - seg_w;
-                    let fill_left = (bar_left + offset).clamp(track.left, track.right);
-                    let fill_right = (bar_left + offset + seg_w).clamp(track.left, track.right);
-                    if fill_right > fill_left {
-                        let fill_rect = D2D_RECT_F { left: fill_left, top: track.top, right: fill_right, bottom: track.bottom };
-                        if let Ok(pulse_b) = brush([1.0, 1.0, 1.0], 0.85) {
-                            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: fill_rect, radiusX: 1.5, radiusY: 1.5 }, &pulse_b);
-                        }
-                    }
-                }
-                ToastState::UpToDate(ver) => {
-                    if let Ok(green_b) = brush([0.18, 0.75, 0.40], 1.0) {
-                        target.FillEllipse(&D2D1_ELLIPSE { point: slot_c, radiusX: 11.0, radiusY: 11.0 }, &green_b);
-                    }
-                    if let Ok(check_b) = brush([1.0, 1.0, 1.0], 1.0) {
-                        target.DrawLine(Vector2 { X: slot_c.X - 4.5, Y: slot_c.Y }, Vector2 { X: slot_c.X - 1.3, Y: slot_c.Y + 3.2 }, &check_b, 1.6, None);
-                        target.DrawLine(Vector2 { X: slot_c.X - 1.3, Y: slot_c.Y + 3.2 }, Vector2 { X: slot_c.X + 4.5, Y: slot_c.Y - 3.5 }, &check_b, 1.6, None);
-                    }
-                    let title = if self.is_ru { "Обновление не требуется" } else { "Up to date" };
-                    let sub = if self.is_ru { format!("Установлена последняя версия ({ver})") } else { format!("You have the latest version ({ver})") };
-                    self.draw_text_pair(target, text_x, text_y, text_w, title, &sub);
-                }
-                ToastState::Available { version, .. } => {
-                    self.draw_app_icon(target, slot);
-                    let title = if self.is_ru { format!("Доступна версия {version}") } else { format!("Version {version} available") };
-                    let sub = if self.is_ru { "Готово к установке" } else { "Ready to install" };
-                    self.draw_text_pair(target, text_x, text_y, text_w, &title, sub);
-
-                    let btn = D2D_RECT_F { left: card.right - 14.0 - 84.0, top: card.top + 31.0, right: card.right - 14.0, bottom: card.top + 55.0 };
-                    self.btn_rect = Some(btn);
-                    let btn_fill = if self.hover_btn { [1.0, 1.0, 1.0] } else { [0.92, 0.93, 0.96] };
-                    if let Ok(btn_b) = brush(btn_fill, 1.0) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: btn, radiusX: 6.0, radiusY: 6.0 }, &btn_b);
-                    }
-                    let label = if self.is_ru { "ОБНОВИТЬ" } else { "UPDATE" };
-                    if let Ok(lbl_layout) = self.layout(label, w!("Segoe UI"), DWRITE_FONT_WEIGHT_BOLD, 10.0, 84.0) {
-                        let _ = lbl_layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                        let _ = lbl_layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                        let _ = lbl_layout.SetMaxHeight(btn.bottom - btn.top);
-                        if let Ok(lbl_b) = brush([0.08, 0.09, 0.12], 1.0) {
-                            target.DrawTextLayout(Vector2 { X: btn.left, Y: btn.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
-                        }
-                    }
-                }
-                ToastState::Downloading { percent, downloaded, total } => {
-                    self.draw_app_icon(target, slot);
-                    let title = if self.is_ru { format!("Скачивание обновления: {percent}%") } else { format!("Downloading update: {percent}%") };
-                    let dl_mb = *downloaded as f32 / (1024.0 * 1024.0);
-                    let tot_mb = *total as f32 / (1024.0 * 1024.0);
-                    let sub = match (*total > 0, self.is_ru) {
-                        (true, true) => format!("{dl_mb:.1} МБ из {tot_mb:.1} МБ"),
-                        (true, false) => format!("{dl_mb:.1} MB of {tot_mb:.1} MB"),
-                        (false, true) => format!("{dl_mb:.1} МБ скачано"),
-                        (false, false) => format!("{dl_mb:.1} MB downloaded"),
-                    };
-                    self.draw_text_pair(target, text_x, text_y, text_w, &title, &sub);
-
                     let track = D2D_RECT_F { left: bar_left, top: bar_top, right: bar_left + bar_w, bottom: bar_top + 4.0 };
-                    if let Ok(track_b) = brush([1.0, 1.0, 1.0], 0.12) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: track, radiusX: 2.0, radiusY: 2.0 }, &track_b);
+                    if let Ok(t) = brush([1.0, 1.0, 1.0], 0.12) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: track, radiusX: 2.0, radiusY: 2.0 }, &t);
+                    }
+                    let seg_w = 90.0;
+                    let offset = ((self.pulse_tick as f32 * 4.0) % (bar_w + seg_w)) - seg_w;
+                    let l = (bar_left + offset).clamp(track.left, track.right);
+                    let r = (bar_left + offset + seg_w).clamp(track.left, track.right);
+                    if r > l {
+                        if let Ok(f) = brush(ACCENT, 1.0) {
+                            target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: l, top: track.top, right: r, bottom: track.bottom }, radiusX: 2.0, radiusY: 2.0 }, &f);
+                        }
+                    }
+                }
+                ToastState::Downloading { percent, .. } => {
+                    let track = D2D_RECT_F { left: bar_left, top: bar_top, right: bar_left + bar_w, bottom: bar_top + 4.0 };
+                    if let Ok(t) = brush([1.0, 1.0, 1.0], 0.12) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: track, radiusX: 2.0, radiusY: 2.0 }, &t);
                     }
                     let fill_w = (bar_w * (*percent as f32 / 100.0)).clamp(4.0, bar_w);
-                    let fill_rect = D2D_RECT_F { left: track.left, top: track.top, right: track.left + fill_w, bottom: track.bottom };
-                    if let Ok(fill_b) = brush([1.0, 1.0, 1.0], 0.88) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: fill_rect, radiusX: 2.0, radiusY: 2.0 }, &fill_b);
+                    if let Ok(f) = brush(ACCENT, 1.0) {
+                        target.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: track.left, top: track.top, right: track.left + fill_w, bottom: track.bottom }, radiusX: 2.0, radiusY: 2.0 },
+                            &f,
+                        );
                     }
                 }
-                ToastState::Downloaded => {
-                    self.draw_app_icon(target, slot);
-                    let title = if self.is_ru { "Обновление готово!" } else { "Update ready!" };
-                    let sub = if self.is_ru { "Запуск программы установки…" } else { "Launching installer…" };
-                    self.draw_text_pair(target, text_x, text_y, text_w, title, sub);
-                }
-                ToastState::Error(err) => {
-                    if let Ok(red_b) = brush([0.92, 0.30, 0.30], 1.0) {
-                        target.FillEllipse(&D2D1_ELLIPSE { point: slot_c, radiusX: 11.0, radiusY: 11.0 }, &red_b);
+                ToastState::Available { .. } => {
+                    // Two equal buttons across the bottom, like native toast actions
+                    let top = card.top + 100.0;
+                    let mid = (card.left + card.right) / 2.0;
+                    let update = D2D_RECT_F { left: card.left + 16.0, top, right: mid - 4.0, bottom: top + 32.0 };
+                    let dismiss = D2D_RECT_F { left: mid + 4.0, top, right: card.right - 16.0, bottom: top + 32.0 };
+                    self.btn_rect = Some(update);
+                    self.dismiss_rect = Some(dismiss);
+
+                    let accent = if self.hover_btn { [0.50, 0.85, 1.0] } else { ACCENT };
+                    if let Ok(b) = brush(accent, 1.0) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: update, radiusX: 5.0, radiusY: 5.0 }, &b);
                     }
-                    if let Ok(w_b) = brush([1.0, 1.0, 1.0], 1.0) {
-                        target.DrawLine(Vector2 { X: slot_c.X, Y: slot_c.Y - 5.0 }, Vector2 { X: slot_c.X, Y: slot_c.Y + 1.5 }, &w_b, 1.8, None);
-                        target.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: slot_c.X, Y: slot_c.Y + 5.0 }, radiusX: 1.1, radiusY: 1.1 }, &w_b);
+                    if let Ok(b) = brush([1.0, 1.0, 1.0], if self.hover_dismiss { 0.14 } else { 0.09 }) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: dismiss, radiusX: 5.0, radiusY: 5.0 }, &b);
                     }
-                    let title = if self.is_ru { "Ошибка обновления" } else { "Update failed" };
-                    // Длинную ошибку обрезаем, чтобы тост не раздувался
-                    let short: String = if err.chars().count() > 46 {
-                        err.chars().take(45).collect::<String>() + "…"
-                    } else {
-                        err.clone()
-                    };
-                    self.draw_text_pair(target, text_x, text_y, text_w, title, &short);
+                    if let Ok(b) = brush([1.0, 1.0, 1.0], 0.07) {
+                        target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: dismiss, radiusX: 5.0, radiusY: 5.0 }, &b, 1.0, None);
+                    }
+                    let (l1, l2) = if self.is_ru { ("Обновить", "Закрыть") } else { ("Update", "Dismiss") };
+                    self.draw_text_centered(target, l1, update, 13.0, [0.0, 0.0, 0.0]);
+                    self.draw_text_centered(target, l2, dismiss, 13.0, [1.0, 1.0, 1.0]);
                 }
+                _ => {}
             }
         }
     }
@@ -408,40 +433,55 @@ impl ToastWindow {
                     return;
                 }
             }
-            // Запасная снежинка, если иконка не загрузилась
+            // Fallback snowflake if the icon failed to load
             if let Ok(b) = target.CreateSolidColorBrush(&color([0.75, 0.88, 1.0], 0.95), None) {
                 let cx = (rect.left + rect.right) / 2.0;
                 let cy = (rect.top + rect.bottom) / 2.0;
-                let r = 8.0f32;
+                let r = 6.0f32;
                 for a in [0.0f32, 1.0472f32, 2.0944f32] {
                     let (dx, dy) = (a.sin() * r, a.cos() * r);
-                    target.DrawLine(Vector2 { X: cx - dx, Y: cy - dy }, Vector2 { X: cx + dx, Y: cy + dy }, &b, 1.4, None);
+                    target.DrawLine(Vector2 { X: cx - dx, Y: cy - dy }, Vector2 { X: cx + dx, Y: cy + dy }, &b, 1.2, None);
                 }
             }
         }
     }
 
-    fn draw_text_pair(&self, target: &ID2D1RenderTarget, x: f32, y: f32, width: f32, title: &str, sub: &str) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text(&self, target: &ID2D1RenderTarget, text: &str, x: f32, y: f32, width: f32, height: f32, size: f32, weight: DWRITE_FONT_WEIGHT, rgb: [f32; 3], alpha: f32, vcenter: bool) {
         unsafe {
-            if let Ok(t_layout) = self.layout(title, w!("Segoe UI"), DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.0, width) {
-                if let Ok(t_brush) = target.CreateSolidColorBrush(&color([1.0, 1.0, 1.0], 0.96), None) {
-                    target.DrawTextLayout(Vector2 { X: x, Y: y }, &t_layout, &t_brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
-                }
+            let Ok(layout) = self.layout(text, weight, size, width) else { return };
+            let _ = layout.SetMaxHeight(height);
+            if vcenter {
+                let _ = layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             }
-            if let Ok(s_layout) = self.layout(sub, w!("Segoe UI"), DWRITE_FONT_WEIGHT_NORMAL, 11.5, width + 30.0) {
-                if let Ok(s_brush) = target.CreateSolidColorBrush(&color([0.76, 0.77, 0.82], 0.92), None) {
-                    target.DrawTextLayout(Vector2 { X: x, Y: y + 19.0 }, &s_layout, &s_brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
-                }
+            if let Ok(b) = target.CreateSolidColorBrush(&color(rgb, alpha), None) {
+                target.DrawTextLayout(Vector2 { X: x, Y: y }, &layout, &b, D2D1_DRAW_TEXT_OPTIONS_NONE);
             }
         }
     }
 
-    fn layout(&self, text: &str, family: PCWSTR, weight: DWRITE_FONT_WEIGHT, size: f32, width: f32) -> Result<IDWriteTextLayout> {
+    fn draw_text_centered(&self, target: &ID2D1RenderTarget, text: &str, rect: D2D_RECT_F, size: f32, rgb: [f32; 3]) {
+        unsafe {
+            let Ok(layout) = self.layout(text, DWRITE_FONT_WEIGHT_NORMAL, size, rect.right - rect.left) else { return };
+            let _ = layout.SetMaxHeight(rect.bottom - rect.top);
+            let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            let _ = layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            if let Ok(b) = target.CreateSolidColorBrush(&color(rgb, 1.0), None) {
+                target.DrawTextLayout(Vector2 { X: rect.left, Y: rect.top }, &layout, &b, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            }
+        }
+    }
+
+    fn layout(&self, text: &str, weight: DWRITE_FONT_WEIGHT, size: f32, width: f32) -> Result<IDWriteTextLayout> {
         let units: Vec<u16> = text.encode_utf16().collect();
         unsafe {
-            let format = self.text.CreateTextFormat(family, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
-            let layout = self.text.CreateTextLayout(&units, &format, width, 200.0)?;
-            Ok(layout)
+            let make = |family: PCWSTR| {
+                self.text.CreateTextFormat(family, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("ru-ru"))
+            };
+            // Same font as the system toasts, with a fallback for older Windows
+            let format = make(w!("Segoe UI Variable Text")).or_else(|_| make(w!("Segoe UI")))?;
+            self.text.CreateTextLayout(&units, &format, width, 200.0)
         }
     }
 
@@ -488,11 +528,15 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 let Some(t) = toast.as_mut() else { return };
                 let (x, y) = t.dips(pt);
                 let over_close = contains(&t.close_rect, (x, y));
+                let over_more = contains(&t.more_rect, (x, y));
                 let over_btn = t.btn_rect.map_or(false, |r| contains(&r, (x, y)));
+                let over_dismiss = t.dismiss_rect.map_or(false, |r| contains(&r, (x, y)));
 
-                if over_close != t.hover_close || over_btn != t.hover_btn {
+                if over_close != t.hover_close || over_more != t.hover_more || over_btn != t.hover_btn || over_dismiss != t.hover_dismiss {
                     t.hover_close = over_close;
+                    t.hover_more = over_more;
                     t.hover_btn = over_btn;
+                    t.hover_dismiss = over_dismiss;
                     t.paint_and_present();
                 }
             });
@@ -503,7 +547,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             let action = TOAST.with_borrow_mut(|toast| {
                 let Some(t) = toast.as_mut() else { return None };
                 let (x, y) = t.dips(pt);
-                if contains(&t.close_rect, (x, y)) {
+                if contains(&t.close_rect, (x, y)) || t.dismiss_rect.map_or(false, |r| contains(&r, (x, y))) {
                     Some(0)
                 } else if t.btn_rect.map_or(false, |r| contains(&r, (x, y))) {
                     Some(1)
@@ -530,9 +574,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             }
             LRESULT(0)
         }
-        WM_DESTROY => {
-            LRESULT(0)
-        }
+        WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
@@ -559,8 +601,8 @@ fn placement(width: f32, height: f32) -> (f32, POINT) {
         let toast_w = ((width + 2.0 * MARGIN) * scale).ceil() as i32;
         let toast_h = ((height + 2.0 * MARGIN) * scale).ceil() as i32;
 
+        // Bottom-right corner above the taskbar; the card (not the shadow margin) sits EDGE_GAP from the edges
         (scale, POINT {
-            // карточка на EDGE_GAP от края экрана и панели задач (MARGIN — прозрачное поле под тень)
             x: work.right - toast_w + ((MARGIN - EDGE_GAP) * scale) as i32,
             y: work.bottom - toast_h + ((MARGIN - EDGE_GAP) * scale) as i32,
         })

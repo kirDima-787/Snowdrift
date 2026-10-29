@@ -1023,7 +1023,7 @@ pub(crate) fn draw_glass_card(target: &ID2D1RenderTarget, card: D2D_RECT_F, radi
         // Dark tint, a bit lighter at the top
         if let Some(body) = vertical_gradient(
             target, cx, card.top, card.bottom,
-            &[(0.0, [0.20, 0.21, 0.25], tint.0), (1.0, [0.09, 0.10, 0.13], tint.1)],
+            &[(0.0, [0.20, 0.20, 0.21], tint.0), (1.0, [0.10, 0.10, 0.11], tint.1)],
         ) {
             target.FillRoundedRectangle(&shape, &body);
         }

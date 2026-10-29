@@ -62,9 +62,11 @@ thread_local! {
 /// the snow itself runs on its own thread so menus and other modal loops never stall it.
 pub fn run() -> Result<()> {
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(w!("Snowdrift.App"));
         if let Ok(exe) = std::env::current_exe() {
             snowdrift::install::ensure_shortcuts(&exe);
+            snowdrift::install::register_installed(&exe, env!("CARGO_PKG_VERSION"));
         }
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSEXW {

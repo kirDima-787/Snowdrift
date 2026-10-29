@@ -49,6 +49,13 @@ fn main() {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
     if std::env::args().skip(1).any(|argument| {
+        argument.eq_ignore_ascii_case("--uninstall")
+            || argument.eq_ignore_ascii_case("/uninstall")
+    }) {
+        install::uninstall();
+        std::process::exit(0);
+    }
+    if std::env::args().skip(1).any(|argument| {
         argument.eq_ignore_ascii_case("--silent")
             || argument.eq_ignore_ascii_case("/s")
             || argument.eq_ignore_ascii_case("--update")

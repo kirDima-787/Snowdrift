@@ -1,6 +1,6 @@
 [package]
 name = "snowdrift"
-version = "1.0.13"
+version = "1.0.14"
 edition = "2024"
 publish = false
 autobins = false

@@ -11,9 +11,11 @@ use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTask
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW,
 };
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_LocalAppData, FOLDERID_Programs, FOLDERID_UserProgramFiles, IShellLinkW, KF_FLAG_CREATE, SHGetKnownFolderPath, ShellExecuteW, ShellLink,
+    FOLDERID_Desktop, FOLDERID_LocalAppData, FOLDERID_Programs, FOLDERID_UserProgramFiles, IShellLinkW, KF_FLAG_CREATE,
+    SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, SHGetKnownFolderPath, ShellExecuteW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW, WM_CLOSE,
@@ -21,6 +23,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{GUID, Interface, PCWSTR, w};
 
 const UNINSTALL: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Snowdrift");
+const APP_PATHS: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Snowdrift.exe");
+const APP_CLASSES: PCWSTR = w!("Software\\Classes\\Applications\\Snowdrift.exe");
 const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const SETTINGS: PCWSTR = w!("Software\\Snowdrift");
 const NAME: PCWSTR = w!("Snowdrift");
@@ -31,6 +35,41 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// The version the uninstall entry records, if Snowdrift is installed.
 pub fn installed_version() -> Option<String> {
     read_string(UNINSTALL, w!("DisplayVersion"))
+}
+
+/// Registers the application in Windows Settings "Installed apps" (Programs & Features)
+/// and registers application execution paths for Windows Search.
+pub fn register_installed(exe: &Path, version: &str) {
+    let folder = exe.parent().unwrap_or(exe);
+    let quoted = format!("\"{}\"", exe.display());
+    let icon_location = format!("{},0", exe.display());
+
+    let time = unsafe { GetLocalTime() };
+    let install_date = format!("{:04}{:02}{:02}", time.wYear, time.wMonth, time.wDay);
+
+    write_string(UNINSTALL, w!("DisplayName"), "Snowdrift");
+    write_string(UNINSTALL, w!("DisplayVersion"), version);
+    write_string(UNINSTALL, w!("Publisher"), "Snowdrift");
+    write_string(UNINSTALL, w!("DisplayIcon"), &icon_location);
+    write_string(UNINSTALL, w!("InstallLocation"), &folder.display().to_string());
+    write_string(UNINSTALL, w!("UninstallString"), &format!("{quoted} --uninstall"));
+    write_string(UNINSTALL, w!("QuietUninstallString"), &format!("{quoted} --uninstall --silent"));
+    write_string(UNINSTALL, w!("InstallDate"), &install_date);
+    write_string(UNINSTALL, w!("URLInfoAbout"), "https://github.com/kirDima-787/Snowdrift");
+    write_string(UNINSTALL, w!("HelpLink"), "https://github.com/kirDima-787/Snowdrift");
+    write_number(UNINSTALL, w!("NoModify"), 1);
+    write_number(UNINSTALL, w!("NoRepair"), 1);
+    write_number(UNINSTALL, w!("WindowsInstaller"), 0);
+
+    let size_kb = std::fs::metadata(exe).map(|m| (m.len() / 1024) as u32).unwrap_or(1024);
+    write_number(UNINSTALL, w!("EstimatedSize"), size_kb);
+
+    // Global application launch path (allows Win+R "Snowdrift", Windows Search "Snowdrift")
+    write_string(APP_PATHS, PCWSTR::null(), &exe.display().to_string());
+    write_string(APP_PATHS, w!("Path"), &folder.display().to_string());
+
+    // Shell applications registry
+    write_string(APP_CLASSES, w!("FriendlyAppName"), "Snowdrift");
 }
 
 /// Puts the app in place and registers it, replacing a running or older copy. Returns where the app went.
@@ -52,20 +91,15 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     }
 
     ensure_shortcuts(&exe);
-    let quoted = format!("\"{}\"", exe.display());
-    write_string(UNINSTALL, w!("DisplayName"), "Snowdrift");
-    write_string(UNINSTALL, w!("DisplayVersion"), version);
-    write_string(UNINSTALL, w!("Publisher"), "Snowdrift");
-    write_string(UNINSTALL, w!("DisplayIcon"), &exe.display().to_string());
-    write_string(UNINSTALL, w!("InstallLocation"), &folder.display().to_string());
-    write_string(UNINSTALL, w!("UninstallString"), &format!("{quoted} --uninstall"));
-    write_string(UNINSTALL, w!("QuietUninstallString"), &format!("{quoted} --uninstall --silent"));
-    write_number(UNINSTALL, w!("NoModify"), 1);
-    write_number(UNINSTALL, w!("NoRepair"), 1);
-    write_number(UNINSTALL, w!("EstimatedSize"), app.len().div_ceil(1024) as u32);
+    register_installed(&exe, version);
+
     // Open at Login by default: launches beautifully with Windows
+    let quoted = format!("\"{}\"", exe.display());
     let startup_cmd = format!("{quoted} --startup");
     write_string(RUN, NAME, &startup_cmd);
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
     Ok(exe)
 }
 
@@ -82,14 +116,23 @@ pub fn uninstall() {
         let _ = std::fs::remove_dir_all(data.join("Snowdrift"));
     }
     let folder = read_string(UNINSTALL, w!("InstallLocation"));
+    let exe_path = read_string(APP_PATHS, PCWSTR::null());
     unsafe {
         let _ = RegDeleteTreeW(HKEY_CURRENT_USER, UNINSTALL);
         let _ = RegDeleteTreeW(HKEY_CURRENT_USER, SETTINGS);
+        let _ = RegDeleteTreeW(HKEY_CURRENT_USER, APP_PATHS);
+        let _ = RegDeleteTreeW(HKEY_CURRENT_USER, APP_CLASSES);
         let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME);
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
     if let Some(folder) = folder.filter(|folder| folder.ends_with("Snowdrift")) {
         let _ = std::process::Command::new("cmd.exe")
             .raw_arg(format!("/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{folder}\""))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    } else if let Some(exe) = exe_path {
+        let _ = std::process::Command::new("cmd.exe")
+            .raw_arg(format!("/c ping 127.0.0.1 -n 3 >nul & del /f /q \"{exe}\""))
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
@@ -126,18 +169,22 @@ pub fn ensure_shortcuts(exe: &Path) {
     if let Some(desktop) = known_folder(&FOLDERID_Desktop) {
         let _ = shortcut(exe, &desktop.join("Snowdrift.lnk"));
     }
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
 }
 
 fn shortcut(target: &Path, at: &Path) -> windows::core::Result<()> {
     let target_path = target.as_os_str().encode_wide_null();
     let folder = target.parent().unwrap_or(target).as_os_str().encode_wide_null();
-    let at = at.as_os_str().encode_wide_null();
+    let at_path = at.as_os_str().encode_wide_null();
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         link.SetPath(PCWSTR(target_path.as_ptr()))?;
         link.SetWorkingDirectory(PCWSTR(folder.as_ptr()))?;
         link.SetDescription(w!("Snow on your desktop"))?;
-        link.cast::<IPersistFile>()?.Save(PCWSTR(at.as_ptr()), true)
+        link.SetIconLocation(PCWSTR(target_path.as_ptr()), 0)?;
+        link.cast::<IPersistFile>()?.Save(PCWSTR(at_path.as_ptr()), true)
     }
 }
 
