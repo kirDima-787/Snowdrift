@@ -83,6 +83,12 @@ jobs:
           export SNOWDRIFT_APP="$PWD/target/release/Snowdrift.exe"
           cargo build --release --features setup --bin Snowdrift-Setup
 
+      - name: Sign Windows binaries
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Snowdrift, O=Snowdrift" -CertStoreLocation "Cert:\CurrentUser\My" -HashAlgorithm SHA256
+          & signtool.exe sign /sha1 $cert.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/Snowdrift.exe target/release/Snowdrift-Setup.exe
+
       - name: Upload Windows binaries to Release
         uses: softprops/action-gh-release@v2
         with:

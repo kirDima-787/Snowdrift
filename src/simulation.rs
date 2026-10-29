@@ -44,12 +44,7 @@ const GUST_LAG: f32 = 0.3;
 /// Snow a wall scrapes up packs down to this share of its fresh bulk.
 const PACKING: f32 = 0.6;
 
-#[derive(Clone, Copy, Debug)]
-pub struct Blizzard {
-    pub start: f64,
-    pub duration: f32,
-    pub shake: (f32, f32),
-}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Snowfall {
@@ -58,6 +53,7 @@ pub enum Snowfall {
     Steady,
     Heavy,
     Variable,
+    Blizzard,
 }
 
 impl Snowfall {
@@ -70,26 +66,29 @@ impl Snowfall {
             Snowfall::Steady => "Steady",
             Snowfall::Heavy => "Heavy",
             Snowfall::Variable => "Variable",
+            Snowfall::Blizzard => "Blizzard",
         }
     }
 
     pub fn title_ru(self) -> &'static str {
         match self {
             Snowfall::Off => "Выкл",
-            Snowfall::Light => "Лёгкий",
-            Snowfall::Steady => "Умеренный",
+            Snowfall::Light => "Мало",
+            Snowfall::Steady => "Обычный",
             Snowfall::Heavy => "Сильный",
             Snowfall::Variable => "Переменный",
+            Snowfall::Blizzard => "Метель",
         }
     }
 
-    fn flakes_per_megapoint(self) -> f32 {
+    pub fn flakes_per_megapoint(self) -> f32 {
         match self {
             Snowfall::Off => 0.0,
             Snowfall::Light => 150.0,
             Snowfall::Steady => 380.0,
             Snowfall::Heavy => 800.0,
             Snowfall::Variable => 380.0,
+            Snowfall::Blizzard => 2200.0,
         }
     }
 }
@@ -240,7 +239,6 @@ struct Air {
     /// Snow released while the air is full, laid straight onto the ground at the end of the step.
     overflow: Vec<(f32, f32)>,
     gust: Option<Gust>,
-    pub blizzard: Option<Blizzard>,
 }
 
 pub struct SnowSimulation {
@@ -314,7 +312,6 @@ impl SnowSimulation {
                 wake_radius: 110.0,
                 overflow: Vec::new(),
                 gust: None,
-                blizzard: None,
             },
         };
         simulation.update_target();
@@ -322,29 +319,19 @@ impl SnowSimulation {
     }
 
     pub fn start_blizzard(&mut self) {
-        self.air.start_blizzard(45.0);
-        self.layers[0].set_depth(75.0);
-        for layer in &mut self.layers[1..] {
-            layer.set_depth(28.0);
-        }
-        self.update_target();
+        self.set_snowfall(Snowfall::Blizzard);
     }
 
     pub fn stop_blizzard(&mut self) {
-        self.air.stop_blizzard();
-        self.layers[0].set_depth(GROUND_DEPTH);
-        for layer in &mut self.layers[1..] {
-            layer.set_depth(LEDGE_DEPTH);
-        }
-        self.update_target();
+        self.set_snowfall(Snowfall::Heavy);
     }
 
     pub fn is_blizzard(&self) -> bool {
-        self.air.is_blizzard()
+        self.snowfall == Snowfall::Blizzard
     }
 
     pub fn blizzard_shake(&self) -> (f32, f32) {
-        self.air.blizzard_shake()
+        (0.0, 0.0)
     }
 
     pub fn set_cursor_radius(&mut self, radius: f32, wake_radius: f32) {
@@ -371,6 +358,17 @@ impl SnowSimulation {
         if snowfall != Snowfall::Variable {
             self.air.strength = 1.0;
             self.strength_target = 1.0;
+        }
+        if snowfall == Snowfall::Blizzard {
+            self.layers[0].set_depth(65.0);
+            for layer in &mut self.layers[1..] {
+                layer.set_depth(24.0);
+            }
+        } else if self.snowfall == Snowfall::Blizzard {
+            self.layers[0].set_depth(GROUND_DEPTH);
+            for layer in &mut self.layers[1..] {
+                layer.set_depth(LEDGE_DEPTH);
+            }
         }
         self.snowfall = snowfall;
         self.update_target();
@@ -443,35 +441,6 @@ impl SnowSimulation {
         for layer in &mut self.layers {
             layer.refresh_top();
             layer.previous_base_y = layer.base().y;
-        }
-
-        let is_blizz = self.air.is_blizzard();
-        let speed = self.air.wind_speed().abs();
-        let shake = if let Some(b) = self.air.blizzard {
-            let elapsed = (self.air.clock - b.start) as f32;
-            if elapsed < b.duration {
-                let factor = ((speed - 420.0) / 550.0).clamp(0.0, 1.0);
-                if factor > 0.0 {
-                    let t = elapsed;
-                    let shake_x = ((t * 46.0).sin() * 2.6 + (t * 83.0).cos() * 1.4) * factor;
-                    let shake_y = ((t * 57.0).cos() * 2.0 + (t * 107.0).sin() * 1.1) * factor;
-                    (shake_x, shake_y)
-                } else {
-                    (0.0, 0.0)
-                }
-            } else {
-                (0.0, 0.0)
-            }
-        } else {
-            (0.0, 0.0)
-        };
-        if let Some(ref mut b) = self.air.blizzard {
-            b.shake = shake;
-        }
-        if is_blizz && speed > 550.0 && self.air.random.next() < 0.35 {
-            let x = self.air.random.range(0.0, self.width);
-            let dir = if self.air.wind_speed() > 0.0 { 1.0 } else { -1.0 };
-            self.air.lift(V2::new(x, 8.0), dir);
         }
 
         let air = &self.air;
@@ -869,7 +838,8 @@ impl SnowSimulation {
     fn recycle(&mut self, i: usize) {
         if self.air.flakes.len() <= self.target_flakes && !self.air.blowing() {
             let y = self.height + self.air.random.range(4.0, 40.0);
-            self.air.flakes[i] = self.air.make_flake(self.width, y);
+            let is_blizzard = self.is_blizzard();
+            self.air.flakes[i] = self.air.make_flake(self.width, y, is_blizzard);
         } else {
             self.air.flakes.swap_remove(i);
         }
@@ -881,24 +851,9 @@ impl SnowSimulation {
             return;
         }
         let is_blizzard = self.is_blizzard();
-        let wind = self.air.wind_speed();
         while self.air.flakes.len() < self.target_flakes {
-            let (x, y) = if is_blizzard && self.air.random.next() < 0.45 {
-                let spawn_y = self.air.random.range(0.0, self.height + 60.0);
-                let spawn_x = if wind > 0.0 { -25.0 } else { self.width + 25.0 };
-                (spawn_x, spawn_y)
-            } else {
-                (
-                    self.air.random.range(-30.0, self.width + 30.0),
-                    self.height + self.air.random.range(0.0, self.height * 0.8),
-                )
-            };
-            let mut flake = self.air.make_flake(self.width, y);
-            flake.position.x = x;
-            if is_blizzard {
-                flake.velocity.x = wind * (0.6 + 0.4 * flake.depth);
-                flake.fall_speed *= 1.4;
-            }
+            let y = self.height + self.air.random.range(0.0, self.height * 0.8);
+            let flake = self.air.make_flake(self.width, y, is_blizzard);
             self.air.flakes.push(flake);
         }
     }
@@ -1041,11 +996,6 @@ impl SnowSimulation {
     }
 
     fn update_target(&mut self) {
-        if self.is_blizzard() {
-            let blizzard_density = 2800.0 * self.density * self.width * self.height / 1_000_000.0;
-            self.target_flakes = blizzard_density.max(2200.0) as usize;
-            return;
-        }
         let per_megapoint = if self.snowfall_held { 0.0 } else { self.snowfall.flakes_per_megapoint() };
         self.target_flakes = (per_megapoint * self.air.strength * self.density * self.width * self.height / 1_000_000.0) as usize;
     }
@@ -1525,12 +1475,13 @@ impl Air {
         }
     }
 
-    fn make_flake(&mut self, width: f32, y: f32) -> Flake {
+    fn make_flake(&mut self, width: f32, y: f32, blizzard: bool) -> Flake {
         let wind = self.wind_speed();
         let random = &mut self.random;
         let near = random.next() < 0.02;
         let depth = if near { 1.0 } else { random.next().powf(1.6) };
-        let fall_speed = if near { random.range(75.0, 100.0) } else { 16.0 + depth * 50.0 + random.range(0.0, 10.0) };
+        let base_speed = if near { random.range(75.0, 100.0) } else { 16.0 + depth * 50.0 + random.range(0.0, 10.0) };
+        let fall_speed = if blizzard { base_speed * 2.4 } else { base_speed };
         Flake {
             position: V2::new(random.range(-30.0, width + 30.0), y),
             velocity: V2::new(wind * (0.35 + 0.65 * depth), -fall_speed),
@@ -1550,44 +1501,9 @@ impl Air {
         }
     }
 
-    pub fn start_blizzard(&mut self, duration: f32) {
-        self.blizzard = Some(Blizzard {
-            start: self.clock,
-            duration,
-            shake: (0.0, 0.0),
-        });
-    }
 
-    pub fn stop_blizzard(&mut self) {
-        self.blizzard = None;
-    }
-
-    pub fn is_blizzard(&self) -> bool {
-        if let Some(b) = self.blizzard {
-            ((self.clock - b.start) as f32) < b.duration
-        } else {
-            false
-        }
-    }
-
-    pub fn blizzard_shake(&self) -> (f32, f32) {
-        self.blizzard.map(|b| b.shake).unwrap_or((0.0, 0.0))
-    }
 
     fn wind_speed(&self) -> f32 {
-        if let Some(b) = self.blizzard {
-            let elapsed = (self.clock - b.start) as f32;
-            if elapsed < b.duration {
-                let t = elapsed;
-                let w1 = (t * 0.95).sin();
-                let w2 = (t * 2.1 + 0.7).sin() * 0.35;
-                let w3 = (t * 0.32 + 1.4).sin() * 0.4;
-                let raw = (w1 + w2 + w3) / 1.75;
-                let surge = ((raw + 0.35).clamp(0.0, 1.0)).powf(1.5);
-                let dir = if (t * 0.16).sin() >= -0.25 { 1.0 } else { -1.0 };
-                return dir * (110.0 + surge * 980.0);
-            }
-        }
         self.breeze() + self.gust_speed()
     }
 

@@ -2,7 +2,7 @@
 //! Windows is the main target (real blurred backdrop + fade/slide animation);
 //! macOS / Linux presets live in `Theme` so the look is ready when the window code gets ported.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use std::rc::Rc;
 use std::time::Instant;
@@ -114,7 +114,6 @@ pub enum PanelAction {
     Language(Language),
     CheckUpdates,
     Quit,
-    Blizzard,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -160,6 +159,11 @@ struct PanelWindow {
 
 thread_local! {
     static PANEL: RefCell<Option<PanelWindow>> = const { RefCell::new(None) };
+    static BLIZZARD_UNLOCKED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn unlock_blizzard() {
+    BLIZZARD_UNLOCKED.set(true);
 }
 
 pub fn show(at: POINT, settings: Settings, login: bool, on_action: impl Fn(PanelAction) + 'static) {
@@ -406,25 +410,6 @@ impl PanelWindow {
                     }
                 }
 
-                if row.kind == RowKind::Snowfall {
-                    if let Some(start) = self.holding_snowfall {
-                        let progress = (start.elapsed().as_secs_f32() / 3.0).clamp(0.0, 1.0);
-                        let fill_w = (row.rect.right - row.rect.left) * progress;
-                        let progress_rect = D2D_RECT_F {
-                            left: row.rect.left,
-                            top: row.rect.top + 1.0,
-                            right: row.rect.left + fill_w,
-                            bottom: row.rect.bottom - 1.0,
-                        };
-                        if let Ok(ice_b) = brush([0.35, 0.75, 1.0], 0.28 + 0.35 * progress) {
-                            target.FillRoundedRectangle(
-                                &D2D1_ROUNDED_RECT { rect: progress_rect, radiusX: t.hover_radius, radiusY: t.hover_radius },
-                                &ice_b,
-                            );
-                        }
-                    }
-                }
-
                 self.draw_left_icon(target, row.kind, row.rect, is_hovered);
 
                 let label = self.row_label(row.kind);
@@ -436,16 +421,8 @@ impl PanelWindow {
                     } else {
                         [0.93, 0.94, 0.97]
                     };
-                    let mut text_x = card.left + 32.0;
-                    if row.kind == RowKind::Snowfall && self.holding_snowfall.is_some() {
-                        let start = self.holding_snowfall.unwrap();
-                        let elapsed = start.elapsed().as_secs_f32();
-                        if elapsed > 0.6 {
-                            text_x += (elapsed * 55.0).sin() * (elapsed / 3.0) * 1.8;
-                        }
-                    }
                     if let Ok(lbl_b) = brush(col, 1.0) {
-                        target.DrawTextLayout(Vector2 { X: text_x, Y: row.rect.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                        target.DrawTextLayout(Vector2 { X: card.left + 32.0, Y: row.rect.top }, &lbl_layout, &lbl_b, D2D1_DRAW_TEXT_OPTIONS_NONE);
                     }
                 }
             }
@@ -604,30 +581,17 @@ impl PanelWindow {
         let is_ru = self.settings.language.is_ru();
         match kind {
             RowKind::Snowfall => {
-                if let Some(start) = self.holding_snowfall {
-                    let remaining = (3.0 - start.elapsed().as_secs_f32()).max(0.1);
-                    if is_ru {
-                        format!("Метель через {:.1}с...", remaining)
-                    } else {
-                        format!("Blizzard in {:.1}s...", remaining)
-                    }
-                } else if is_ru {
-                    let title = match self.settings.snowfall {
-                        Snowfall::Off => "Выкл",
-                        Snowfall::Light => "Мало",
-                        Snowfall::Steady => "Обычный",
-                        Snowfall::Heavy => "Сильный",
-                        Snowfall::Variable => "Переменный",
-                    };
+                let title = match self.settings.snowfall {
+                    Snowfall::Off => if is_ru { "Выкл" } else { "Off" },
+                    Snowfall::Light => if is_ru { "Мало" } else { "Light" },
+                    Snowfall::Steady => if is_ru { "Обычный" } else { "Steady" },
+                    Snowfall::Heavy => if is_ru { "Сильный" } else { "Heavy" },
+                    Snowfall::Variable => if is_ru { "Переменный" } else { "Variable" },
+                    Snowfall::Blizzard => if is_ru { "Метель" } else { "Blizzard" },
+                };
+                if is_ru {
                     format!("Снегопад: {title}")
                 } else {
-                    let title = match self.settings.snowfall {
-                        Snowfall::Off => "Off",
-                        Snowfall::Light => "Light",
-                        Snowfall::Steady => "Steady",
-                        Snowfall::Heavy => "Heavy",
-                        Snowfall::Variable => "Variable",
-                    };
                     format!("Snowfall: {title}")
                 }
             }
@@ -684,7 +648,14 @@ impl PanelWindow {
                             Snowfall::Light => Snowfall::Steady,
                             Snowfall::Steady => Snowfall::Heavy,
                             Snowfall::Heavy => Snowfall::Variable,
-                            Snowfall::Variable => Snowfall::Off,
+                            Snowfall::Variable => {
+                                if BLIZZARD_UNLOCKED.get() || self.settings.snowfall == Snowfall::Blizzard {
+                                    Snowfall::Blizzard
+                                } else {
+                                    Snowfall::Off
+                                }
+                            }
+                            Snowfall::Blizzard => Snowfall::Off,
                         };
                         self.settings.snowfall = next;
                         PanelAction::Snowfall(next)
@@ -774,21 +745,21 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     unsafe { let _ = KillTimer(Some(hwnd), HOLD_TIMER); }
                     return None;
                 };
-                let elapsed = start.elapsed().as_secs_f32();
-                if elapsed >= 3.0 {
+                if start.elapsed().as_secs_f32() >= 3.0 {
                     p.holding_snowfall = None;
                     unsafe {
                         let _ = KillTimer(Some(hwnd), HOLD_TIMER);
                         let _ = ReleaseCapture();
                     }
-                    Some((PanelAction::Blizzard, p.on_action.clone()))
-                } else {
+                    BLIZZARD_UNLOCKED.set(true);
+                    p.settings.snowfall = Snowfall::Blizzard;
                     p.paint_and_present();
+                    Some((PanelAction::Snowfall(Snowfall::Blizzard), p.on_action.clone()))
+                } else {
                     None
                 }
             });
             if let Some((action, cb)) = triggered_action {
-                close();
                 cb(action);
             }
             LRESULT(0)
@@ -803,9 +774,8 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                         p.holding_snowfall = Some(Instant::now());
                         unsafe {
                             let _ = SetCapture(hwnd);
-                            let _ = SetTimer(Some(hwnd), HOLD_TIMER, 16, None);
+                            let _ = SetTimer(Some(hwnd), HOLD_TIMER, 50, None);
                         }
-                        p.paint_and_present();
                         break;
                     }
                 }
@@ -860,12 +830,13 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     let _ = KillTimer(Some(hwnd), HOLD_TIMER);
                     let _ = ReleaseCapture();
                 }
-                let at = p.dips(pt);
                 if let Some(start) = was_holding {
                     if start.elapsed().as_secs_f32() >= 3.0 {
-                        return Some((PanelAction::Blizzard, p.on_action.clone()));
+                        // Already handled by HOLD_TIMER, do nothing on release
+                        return None;
                     }
                 }
+                let at = p.dips(pt);
                 let action = p.handle_click(at)?;
                 let cb = p.on_action.clone();
                 match action {
@@ -876,7 +847,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             });
 
             if let Some((action, cb)) = action_and_cb {
-                if matches!(action, PanelAction::CheckUpdates | PanelAction::Quit | PanelAction::Blizzard) {
+                if matches!(action, PanelAction::CheckUpdates | PanelAction::Quit) {
                     close();
                 }
                 cb(action);

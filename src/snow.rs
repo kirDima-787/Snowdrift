@@ -48,7 +48,6 @@ pub enum Command {
     ReleaseSnowfall,
     /// Blows all the snow away; when calm, for less motion, melts it where it lies instead.
     ClearSnow(bool),
-    Blizzard,
     Quit,
 }
 
@@ -107,9 +106,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                         screen.simulation.set_snowfall(snowfall);
                     });
                 }
-                Command::Blizzard => {
-                    screens.iter_mut().for_each(|screen| screen.simulation.start_blizzard());
-                }
+
                 Command::Accumulate(on) => {
                     settings.accumulate = on;
                     screens.iter_mut().for_each(|screen| screen.simulation.accumulates = on);

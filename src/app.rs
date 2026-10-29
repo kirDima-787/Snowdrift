@@ -27,6 +27,7 @@ use crate::welcome::{self, Handlers};
 use crate::panel::{self, PanelAction};
 use crate::toast::{self, ToastCallbacks, ToastState};
 use snowdrift::update::{self, Release};
+use snowdrift::simulation::Snowfall;
 
 const CLASS: PCWSTR = w!("SnowdriftController");
 const WM_TRAY: u32 = WM_APP + 1;
@@ -159,10 +160,11 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             unsafe {
                 let _ = KillTimer(Some(window), TIMER_TRAY_HOLD);
             }
-            APP.with_borrow(|app| {
-                if let Some(app) = app {
-                    send(app, Command::Blizzard);
-                }
+            panel::unlock_blizzard();
+            APP.with_borrow_mut(|app| {
+                let Some(app) = app else { return };
+                app.settings.snowfall = Snowfall::Blizzard;
+                send(app, Command::Snowfall(Snowfall::Blizzard));
             });
             LRESULT(0)
         }
@@ -304,11 +306,6 @@ fn show_tray_panel(window: HWND, x: i32, y: i32) {
 fn handle_panel_action(window: HWND, action: PanelAction) {
     match action {
         PanelAction::Quit => quit(window),
-        PanelAction::Blizzard => APP.with_borrow(|app| {
-            if let Some(app) = app {
-                send(app, Command::Blizzard);
-            }
-        }),
         PanelAction::CheckUpdates => check_for_updates(window, true),
         PanelAction::ClearSnow => APP.with_borrow(|app| {
             if let Some(app) = app {
