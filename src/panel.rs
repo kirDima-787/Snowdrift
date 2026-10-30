@@ -404,10 +404,16 @@ impl PanelWindow {
             for row in &self.rows {
                 let is_hovered = self.hovered == Some(row.kind);
                 let freeze_progress = if row.kind == RowKind::Snowfall {
-                    if let Some(start) = self.holding_snowfall {
-                        (start.elapsed().as_secs_f32() / 3.0).clamp(0.0, 1.0)
-                    } else if is_blizzard {
+                    if is_blizzard {
                         1.0
+                    } else if let Some(start) = self.holding_snowfall {
+                        let elapsed = start.elapsed().as_secs_f32();
+                        // Freeze only begins when held past 350ms: prevents any flash on quick clicks
+                        if elapsed < 0.35 {
+                            0.0
+                        } else {
+                            ((elapsed - 0.35) / (3.0 - 0.35)).clamp(0.0, 1.0)
+                        }
                     } else {
                         0.0
                     }
@@ -419,24 +425,61 @@ impl PanelWindow {
                 let rounded = D2D1_ROUNDED_RECT { rect: item_rect, radiusX: t.hover_radius, radiusY: t.hover_radius };
 
                 if freeze_progress > 0.0 {
-                    // Glacial frosted ice tint
-                    let ice_alpha = if is_hovered { 0.28 + 0.12 * freeze_progress } else { 0.20 * freeze_progress };
-                    if let Ok(ice_b) = brush([0.38, 0.74, 1.0], ice_alpha) {
-                        target.FillRoundedRectangle(&rounded, &ice_b);
+                    let p = freeze_progress;
+                    let cx = (item_rect.left + item_rect.right) / 2.0;
+
+                    // 1. Soft ambient ice glow behind the button
+                    if let Ok(glow_b) = brush([0.18, 0.60, 0.98], (if is_hovered { 0.35 } else { 0.22 }) * p) {
+                        let glow_rect = D2D_RECT_F {
+                            left: item_rect.left - 1.0,
+                            top: item_rect.top - 0.5,
+                            right: item_rect.right + 1.0,
+                            bottom: item_rect.bottom + 1.5,
+                        };
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: glow_rect, radiusX: t.hover_radius + 1.0, radiusY: t.hover_radius + 1.0 }, &glow_b);
                     }
-                    // Frost crystalline top sheen
-                    let frost_top = D2D_RECT_F {
-                        left: item_rect.left + 2.0,
+
+                    // 2. Real 3D Ice Button Body (multi-stop glacial gradient)
+                    let hover_add = if is_hovered { 0.15 } else { 0.0 };
+                    if let Some(body) = vertical_gradient(
+                        target, cx, item_rect.top, item_rect.bottom,
+                        &[
+                            (0.0, [0.25, 0.62, 0.94], (0.55 + hover_add) * p),
+                            (0.48, [0.14, 0.44, 0.76], (0.70 + hover_add) * p),
+                            (1.0, [0.08, 0.28, 0.54], (0.85 + hover_add) * p),
+                        ],
+                    ) {
+                        target.FillRoundedRectangle(&rounded, &body);
+                    }
+
+                    // 3. Curved specular gloss highlight on upper 46% (glass refraction & tactile depth)
+                    let gloss_rect = D2D_RECT_F {
+                        left: item_rect.left + 1.0,
                         top: item_rect.top + 1.0,
-                        right: item_rect.right - 2.0,
-                        bottom: item_rect.top + (item_rect.bottom - item_rect.top) * 0.44,
+                        right: item_rect.right - 1.0,
+                        bottom: item_rect.top + (item_rect.bottom - item_rect.top) * 0.46,
                     };
-                    if let Ok(frost_b) = brush([0.84, 0.94, 1.0], 0.16 * freeze_progress) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: frost_top, radiusX: t.hover_radius, radiusY: t.hover_radius }, &frost_b);
+                    if let Some(gloss) = vertical_gradient(
+                        target, cx, gloss_rect.top, gloss_rect.bottom,
+                        &[
+                            (0.0, [0.88, 0.96, 1.0], 0.55 * p),
+                            (0.80, [0.55, 0.82, 1.0], 0.15 * p),
+                            (1.0, [0.40, 0.75, 1.0], 0.0),
+                        ],
+                    ) {
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: gloss_rect, radiusX: t.hover_radius - 1.0, radiusY: t.hover_radius - 1.0 }, &gloss);
                     }
-                    // Crisp icy border rim
-                    if let Ok(border_b) = brush([0.72, 0.90, 1.0], 0.38 * freeze_progress) {
-                        target.DrawRoundedRectangle(&rounded, &border_b, 1.0, None);
+
+                    // 4. Dimensional crystalline 3D bevel rim (top illuminated, bottom bevel)
+                    if let Some(border) = vertical_gradient(
+                        target, cx, item_rect.top, item_rect.bottom,
+                        &[
+                            (0.0, [0.88, 0.96, 1.0], 0.90 * p),
+                            (0.45, [0.48, 0.80, 1.0], 0.55 * p),
+                            (1.0, [0.18, 0.48, 0.80], 0.70 * p),
+                        ],
+                    ) {
+                        target.DrawRoundedRectangle(&rounded, &border, 1.4, None);
                     }
                 } else if is_hovered {
                     let (fill_col, fill_alpha) = if row.kind == RowKind::Quit {
@@ -456,11 +499,11 @@ impl PanelWindow {
                     let col = if row.kind == RowKind::Quit && is_hovered {
                         [1.0, 0.55, 0.55]
                     } else if row.kind == RowKind::Snowfall && freeze_progress > 0.0 {
-                        // Luminous frozen ice text tint
+                        // Crisp ice-white text with high legibility
                         [
-                            0.93 - 0.18 * freeze_progress,
-                            0.94 + 0.04 * freeze_progress,
+                            0.94 - 0.08 * freeze_progress,
                             0.97 + 0.03 * freeze_progress,
+                            1.0,
                         ]
                     } else if is_hovered {
                         [1.0, 1.0, 1.0]
@@ -803,16 +846,18 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     unsafe { let _ = KillTimer(Some(hwnd), HOLD_TIMER); }
                     return None;
                 };
-                let progress = (start.elapsed().as_secs_f32() / 3.0).clamp(0.0, 1.0);
+                let elapsed = start.elapsed().as_secs_f32();
                 let mut action = None;
-                if progress >= 1.0 && !p.holding_snowfall_triggered {
+                if elapsed >= 3.0 && !p.holding_snowfall_triggered {
                     p.holding_snowfall_triggered = true;
                     BLIZZARD_UNLOCKED.set(true);
                     p.settings.snowfall = Snowfall::Blizzard;
                     action = Some((PanelAction::Snowfall(Snowfall::Blizzard), p.on_action.clone()));
                 }
-                // Continuously repaint while holding to smoothly show the icing animation
-                p.paint_and_present();
+                // Only repaint when freezing is actively visible (> 0.35s) or triggered
+                if elapsed >= 0.35 || p.holding_snowfall_triggered {
+                    p.paint_and_present();
+                }
                 action
             });
             if let Some((action, cb)) = triggered_action {
@@ -833,7 +878,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                             let _ = SetCapture(hwnd);
                             let _ = SetTimer(Some(hwnd), HOLD_TIMER, 30, None);
                         }
-                        p.paint_and_present();
+                        // Do NOT call paint_and_present() here, so a fast click has zero freezing outline/flash
                         break;
                     }
                 }
@@ -891,9 +936,9 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     let _ = ReleaseCapture();
                 }
 
-                // If Blizzard was activated during this hold, or if the user held the button (>500ms),
+                // If Blizzard was activated during this hold, or if the user held the button past the freeze threshold (>350ms),
                 // do NOT cycle the row on release! The button remains frozen and Blizzard stays active.
-                if was_triggered || was_holding.map(|s| s.elapsed().as_millis() > 500).unwrap_or(false) {
+                if was_triggered || was_holding.map(|s| s.elapsed().as_secs_f32() >= 0.35).unwrap_or(false) {
                     p.paint_and_present();
                     return None;
                 }

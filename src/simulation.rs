@@ -815,7 +815,8 @@ impl SnowSimulation {
                 grain.velocity.x += (speed - grain.velocity.x) * (dt * 2.0).min(1.0);
                 grain.velocity.y -= GRAVITY * 0.08 * dt;
             } else {
-                grain.velocity.y -= GRAVITY * dt;
+                let g = if grain.lump > 0.0 { GRAVITY } else { GRAVITY * 0.58 };
+                grain.velocity.y -= g * dt;
                 grain.velocity *= damping;
             }
             grain.position += grain.velocity * dt;
@@ -1369,7 +1370,9 @@ impl Air {
         }
 
         let local = center.y - base.y;
-        let spray_share = smoothstep(40.0, 320.0, velocity.length()) * 0.40;
+        let speed = velocity.length();
+        // High spray share: snow kicks up into air freely like real powdery snow, giving minimal resistance
+        let spray_share = (0.55 + smoothstep(20.0, 240.0, speed) * 0.35).min(0.90);
         let mut pushed_left = 0.0;
         let mut pushed_right = 0.0;
 
@@ -1414,16 +1417,22 @@ impl Air {
 
             let area = removed * COLUMN_WIDTH;
             let surface = layer.floor(i) + if buried { h - removed } else { h };
-            let sprayed = if spray_share > 0.0 { self.emit(area * spray_share, V2::new(x, surface), center, velocity) } else { 0.0 };
-            let side = if velocity.x.abs() > 40.0 { velocity.x } else { dx };
-            if side < 0.0 {
-                pushed_left += area - sprayed;
+            let sprayed = if spray_share > 0.0 {
+                self.emit(area * spray_share, V2::new(x, surface), center, velocity)
             } else {
-                pushed_right += area - sprayed;
+                0.0
+            };
+            let side_area = area - sprayed;
+            if dx < 0.0 {
+                pushed_left += side_area;
+            } else {
+                pushed_right += side_area;
             }
         }
 
-        for (area, x) in [(pushed_left, center.x - radius - COLUMN_WIDTH * 3.0), (pushed_right, center.x + radius + COLUMN_WIDTH * 3.0)] {
+        // Cast pushed snow out onto the flanks further away to prevent unnatural wall resistance in front of cursor
+        let flank_offset = radius + COLUMN_WIDTH * 4.0;
+        for (area, x) in [(pushed_left, center.x - flank_offset), (pushed_right, center.x + flank_offset)] {
             if area <= 0.0 {
                 continue;
             }
@@ -1433,29 +1442,57 @@ impl Air {
     }
 
     fn emit(&mut self, area: f32, origin: V2, center: V2, velocity: V2) -> f32 {
-        if area <= 0.6 || self.grains.len() >= MAX_GRAINS {
+        if area <= 0.01 || self.grains.len() >= MAX_GRAINS {
             return 0.0;
         }
-        let count = ((area / 1.6) as usize + 1).min(4);
-        let share = area / count as f32;
         let speed = velocity.length();
         let offset = origin - center;
         let length = offset.length();
         let outward = if length > 0.001 { offset / length } else { V2::new(0.0, 1.0) };
 
+        // Plume of fine snow crystals launched into the air
+        let count = ((area * 1.6) as usize + 2).clamp(2, 14);
+        let share = area / count as f32;
+
         for _ in 0..count {
+            if self.grains.len() >= MAX_GRAINS {
+                break;
+            }
             let random = &mut self.random;
-            let mut v = velocity * random.range(0.55, 1.25) + outward * (speed * random.range(0.05, 0.25));
-            v.y += speed * random.range(0.02, 0.2);
-            v += V2::new(random.range(-30.0, 30.0), random.range(-20.0, 40.0));
+
+            // Energetic upward throw like a snowplow / rooster-tail spray
+            let kick_up = random.range(220.0, 500.0) + speed * random.range(0.35, 0.85);
+
+            // Wide lateral fanning plume
+            let lateral = if speed > 15.0 && velocity.x.abs() > 10.0 {
+                velocity.x * random.range(0.15, 0.60) + random.range(-120.0, 120.0)
+            } else {
+                outward.x * speed * 0.3 + random.range(-110.0, 110.0)
+            };
+
+            let v = V2::new(lateral, kick_up);
+            let p = origin + V2::new(random.range(-2.0, 2.0), random.range(0.0, 3.0));
+
             self.grains.push(Grain {
-                position: origin + V2::new(random.range(-1.0, 1.0), random.range(0.0, 2.0)),
+                position: p,
                 velocity: v,
                 area: share,
-                size: (share.sqrt() * 1.05).clamp(1.1, 4.2),
+                size: random.range(1.4, 3.5),
                 lump: 0.0,
                 blown: false,
             });
+
+            // Soft powdery snow dust clouds (motes) alongside sharp grains
+            if random.next() < 0.35 && self.motes.len() < MAX_MOTES {
+                self.motes.push(Mote {
+                    position: p,
+                    velocity: V2::new(lateral * 0.5, kick_up * random.range(0.35, 0.70)),
+                    size: random.range(4.0, 10.0),
+                    alpha: random.range(0.12, 0.28),
+                    age: 0.0,
+                    life: random.range(0.35, 0.80),
+                });
+            }
         }
         area
     }
