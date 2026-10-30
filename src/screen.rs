@@ -394,10 +394,14 @@ impl Screen {
     /// Behind windows, the snow is kept just under the desktop icons instead, and above live wallpapers
     /// like Lively's, which go into the same layer and land on top when they start later.
     pub fn raise(&self) {
-        let above = match self.layer {
-            Some(layer) => layer.icons.unwrap_or(HWND_TOP),
-            None => lowest_open_popup().unwrap_or(HWND_TOPMOST),
-        };
+        if self.layer.is_some() {
+            // Overlays in desktop wallpaper layer are child windows of Progman/WorkerW.
+            // They are placed below icons upon creation and do not get covered by normal windows.
+            // Calling SetWindowPos on them causes DWM recomposition jitter and black flashing,
+            // especially on multi-monitor setups where multiple overlays conflict for the same slot.
+            return;
+        }
+        let above = lowest_open_popup().unwrap_or(HWND_TOPMOST);
         unsafe {
             if let Ok(current_prev) = GetWindow(self.overlay.0, GW_HWNDPREV)
                 && current_prev == above

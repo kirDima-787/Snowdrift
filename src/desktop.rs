@@ -20,6 +20,15 @@ pub struct DesktopLayer {
 pub fn find() -> Option<DesktopLayer> {
     unsafe {
         let progman = FindWindowW(w!("Progman"), None).ok()?;
+        // If icons and wallpaper already exist under Progman, return them immediately
+        // without sending 0x052C, which prompts Explorer to tear down and rebuild the wallpaper,
+        // causing desktop black flashes.
+        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
+            && FindWindowExW(Some(progman), None, w!("WorkerW"), None).is_ok()
+        {
+            return Some(DesktopLayer { parent: progman, icons: Some(icons) });
+        }
+        // Only if not found, send 0x052C to prompt Explorer to split them:
         for (wparam, lparam) in [(0xD, 1), (0, 0)] {
             let _ = SendMessageTimeoutW(progman, 0x052C, WPARAM(wparam), LPARAM(lparam), SMTO_NORMAL, 1000, None);
         }

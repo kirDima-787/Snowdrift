@@ -198,9 +198,19 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
         if now >= chores_at {
             chores_at = now + clock.frequency;
             clock.refresh();
-            // In case a display change went unannounced.
+            // In case a display change went unannounced. Compare layout and bounds,
+            // ignoring VRR/G-Sync display refresh rate fluctuations to prevent black screen resets.
             let current = monitors();
-            if current.len() != screens.len() || screens.iter().any(|screen| !current.contains(&screen.monitor)) {
+            let displays_differ = current.len() != screens.len()
+                || screens.iter().any(|screen| {
+                    !current.iter().any(|m| {
+                        m.name == screen.monitor.name
+                            && m.bounds == screen.monitor.bounds
+                            && m.rect == screen.monitor.rect
+                            && m.dpi == screen.monitor.dpi
+                    })
+                });
+            if displays_differ {
                 DISPLAYS_CHANGED.set(true);
             }
             let next = power_budget();
@@ -215,7 +225,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             // wallpaper layer is found they wait on top of everything instead.
             if settings.behind_windows && (layer.is_none() || screens.iter().any(|screen| !screen.alive())) {
                 let found = find_layer();
-                if found.is_some() || screens.iter().any(|screen| !screen.alive()) {
+                if found.is_some() != layer.is_some() || screens.iter().any(|screen| !screen.alive()) {
                     layer = found;
                     screens = sync_screens(&gpu, &settings, screens, layer, true);
                 }

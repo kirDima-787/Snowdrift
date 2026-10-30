@@ -314,7 +314,7 @@ impl SnowSimulation {
                 gust: None,
             },
         };
-        simulation.update_target();
+        simulation.set_snowfall(snowfall);
         simulation
     }
 
@@ -359,16 +359,22 @@ impl SnowSimulation {
             self.air.strength = 1.0;
             self.strength_target = 1.0;
         }
-        if snowfall == Snowfall::Blizzard {
-            self.layers[0].set_depth(65.0);
-            for layer in &mut self.layers[1..] {
-                layer.set_depth(24.0);
-            }
-        } else if self.snowfall == Snowfall::Blizzard {
-            self.layers[0].set_depth(GROUND_DEPTH);
-            for layer in &mut self.layers[1..] {
-                layer.set_depth(LEDGE_DEPTH);
-            }
+        let ground_depth = match snowfall {
+            Snowfall::Light => 45.0,
+            Snowfall::Steady => 70.0,
+            Snowfall::Heavy => 110.0,
+            Snowfall::Variable => 90.0,
+            Snowfall::Blizzard => 160.0,
+            Snowfall::Off => GROUND_DEPTH,
+        };
+        let ledge_depth = match snowfall {
+            Snowfall::Blizzard => 35.0,
+            Snowfall::Heavy => 24.0,
+            _ => LEDGE_DEPTH,
+        };
+        self.layers[0].set_depth(ground_depth);
+        for layer in &mut self.layers[1..] {
+            layer.set_depth(ledge_depth);
         }
         self.snowfall = snowfall;
         self.update_target();
