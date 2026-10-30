@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter,
-    IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, IDXGISwapChain3,
 };
 use windows::core::{Error, Interface, PCSTR, Result, s};
 use windows_numerics::Matrix3x2;
@@ -173,7 +173,8 @@ impl Gpu {
 /// One display's drawing surface: a swap chain shown through DirectComposition, so it composes with per-pixel alpha.
 pub struct Surface {
     swap_chain: IDXGISwapChain1,
-    target_view: ID3D11RenderTargetView,
+    swap_chain3: Option<IDXGISwapChain3>,
+    target_views: Vec<ID3D11RenderTargetView>,
     _target: IDCompositionTarget,
     _visual: IDCompositionVisual,
     width: u32,
@@ -202,9 +203,14 @@ impl Surface {
                 ..Default::default()
             };
             let swap_chain = gpu.factory.CreateSwapChainForComposition(&gpu.device, &desc, None)?;
-            let back: ID3D11Texture2D = swap_chain.GetBuffer(0)?;
-            let mut target_view = None;
-            gpu.device.CreateRenderTargetView(&back, None, Some(&mut target_view))?;
+            let swap_chain3: Option<IDXGISwapChain3> = swap_chain.cast().ok();
+            let mut target_views = Vec::with_capacity(desc.BufferCount as usize);
+            for i in 0..desc.BufferCount {
+                let back: ID3D11Texture2D = swap_chain.GetBuffer(i)?;
+                let mut target_view = None;
+                gpu.device.CreateRenderTargetView(&back, None, Some(&mut target_view))?;
+                target_views.push(target_view.ok_or_else(Error::empty)?);
+            }
 
             let target = gpu.composition.CreateTargetForHwnd(window, true)?;
             let visual = gpu.composition.CreateVisual()?;
@@ -216,7 +222,8 @@ impl Surface {
 
             Ok(Surface {
                 swap_chain,
-                target_view: target_view.ok_or_else(Error::empty)?,
+                swap_chain3,
+                target_views,
                 _target: target,
                 _visual: visual,
                 width,
@@ -245,8 +252,15 @@ impl Surface {
             let piles = simulation.write_layers(std::slice::from_raw_parts_mut(mapped.pData.cast::<f32>(), self.height_capacity));
             context.Unmap(height_buffer, 0);
 
-            context.OMSetRenderTargets(Some(&[Some(self.target_view.clone())]), None);
-            context.ClearRenderTargetView(&self.target_view, &[0.0; 4]);
+            let index = if let Some(sc3) = &self.swap_chain3 {
+                sc3.GetCurrentBackBufferIndex() as usize
+            } else {
+                0
+            };
+            let target_view = &self.target_views[index.min(self.target_views.len() - 1)];
+
+            context.OMSetRenderTargets(Some(&[Some(target_view.clone())]), None);
+            context.ClearRenderTargetView(target_view, &[0.0; 4]);
             context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                 TopLeftX: shake.0,
                 TopLeftY: shake.1,
@@ -306,6 +320,7 @@ impl Surface {
                 context.PSSetShader(&gpu.sprite_fragment, None);
                 context.DrawInstanced(4, sprites as u32, 0, 0);
             }
+            context.OMSetRenderTargets(None, None);
             self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()
         }
     }
