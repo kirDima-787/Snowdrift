@@ -23,7 +23,7 @@ const REPOSE: f32 = 0.95;
 const ROUNDING: f32 = 0.08;
 const CURSOR_OFFSET: V2 = V2::new(4.0, -8.0);
 const GRAVITY: f32 = 2500.0;
-const GRAIN_DRAG: f32 = 2.2;
+const GRAIN_DRAG: f32 = 1.65;
 const MAX_GRAINS: usize = 12000;
 const PHASE_WRAP: f32 = 20.0 * PI;
 const LEDGE_INSET: f32 = 0.0;
@@ -1373,8 +1373,8 @@ impl Air {
 
         let local = center.y - base.y;
         let speed = velocity.length();
-        // High spray share: snow kicks up into air freely like real powdery snow, giving minimal resistance
-        let spray_share = (0.55 + smoothstep(20.0, 240.0, speed) * 0.35).min(0.90);
+        // Moderate spray share: fewer particles thrown upward, crisp sparkling plume
+        let spray_share = (0.25 + smoothstep(30.0, 280.0, speed) * 0.20).min(0.45);
         let mut pushed_left = 0.0;
         let mut pushed_right = 0.0;
 
@@ -1445,7 +1445,7 @@ impl Air {
     }
 
     fn emit(&mut self, area: f32, origin: V2, center: V2, velocity: V2) -> f32 {
-        if area <= 0.01 || self.grains.len() >= MAX_GRAINS {
+        if area <= 0.04 || self.grains.len() >= MAX_GRAINS {
             return 0.0;
         }
         let speed = velocity.length();
@@ -1455,8 +1455,8 @@ impl Air {
         let length = offset.length();
         let outward = if length > 0.001 { offset / length } else { V2::new(0.0, 1.0) };
 
-        // Plume of fine snow crystals launched into the air
-        let count = ((area * 1.4) as usize + 2).clamp(2, 10);
+        // Fewer particles upward: elegant, discrete crystals rather than a dense wall
+        let count = ((area * 0.45) as usize + 1).clamp(1, 4);
         let share = area / count as f32;
 
         for _ in 0..count {
@@ -1465,16 +1465,16 @@ impl Air {
             }
             let random = &mut self.random;
 
-            // Compact natural upward rooster-tail spray (arcs gracefully 40-80 px above snowbank)
-            let kick_up = random.range(120.0, 220.0) + speed_ratio * random.range(40.0, 80.0);
+            // Slightly higher graceful arc (75-120 px above snowbank)
+            let kick_up = random.range(170.0, 290.0) + speed_ratio * random.range(50.0, 100.0);
 
-            // Compact lateral plume around the cursor path (stays tightly clustered around the plow)
+            // Compact lateral spread around the cursor path
             let lateral = if speed > 15.0 && velocity.x.abs() > 10.0 {
                 let dir = velocity.x.signum();
                 let vel_mag = velocity.x.abs().min(300.0);
-                dir * vel_mag * random.range(0.12, 0.28) + random.range(-35.0, 35.0)
+                dir * vel_mag * random.range(0.12, 0.26) + random.range(-30.0, 30.0)
             } else {
-                outward.x * speed_clamped * 0.18 + random.range(-30.0, 30.0)
+                outward.x * speed_clamped * 0.16 + random.range(-25.0, 25.0)
             };
 
             let v = V2::new(lateral, kick_up);
@@ -1484,20 +1484,20 @@ impl Air {
                 position: p,
                 velocity: v,
                 area: share,
-                size: random.range(1.3, 3.0),
+                size: random.range(1.5, 3.2),
                 lump: 0.0,
                 blown: false,
             });
 
-            // Soft powdery snow dust clouds (motes) alongside sharp grains
-            if random.next() < 0.35 && self.motes.len() < MAX_MOTES {
+            // Sparse snow dust motes
+            if random.next() < 0.15 && self.motes.len() < MAX_MOTES {
                 self.motes.push(Mote {
                     position: p,
-                    velocity: V2::new(lateral * 0.35, kick_up * random.range(0.30, 0.50)),
-                    size: random.range(3.0, 6.5),
-                    alpha: random.range(0.10, 0.24),
+                    velocity: V2::new(lateral * 0.35, kick_up * random.range(0.28, 0.45)),
+                    size: random.range(2.5, 5.5),
+                    alpha: random.range(0.08, 0.18),
                     age: 0.0,
-                    life: random.range(0.30, 0.65),
+                    life: random.range(0.30, 0.55),
                 });
             }
         }
