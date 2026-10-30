@@ -2,3 +2,7 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+*.pfx
+*.p12
+*.pvk
+*.snk

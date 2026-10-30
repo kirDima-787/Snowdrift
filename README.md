@@ -56,6 +56,12 @@ cargo build --release --bin Snowdrift
 cargo build --release --bin Snowdrift
 ```
 
+### Windows SmartScreen / Defender
+
+New unsigned Windows builds trigger SmartScreen ("Windows protected your PC") and can be flagged by Defender's heuristics. This is a reputation issue, not a virus. Releases are signed in CI when `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` are configured. See [docs/windows-smartscreen.md](docs/windows-smartscreen.md) for the signing setup, Microsoft false-positive submission, and the local development exclusion script.
+
+> Never ship a build signed with `New-SelfSignedCertificate`: Windows does not trust it. Sign `Snowdrift.exe` before building the installer, because the installer carries a copy of the app inside it.
+
 ---
 
 ## О проекте (RU)
@@ -68,6 +74,10 @@ Snowdrift - легкий и атмосферный падающий снег н�
 1. Скачайте нужный файл в блоке ссылок выше.
 2. Запустите приложение - иконка снежинки появится в системном трее Windows (или строке меню macOS).
 3. Кликните по иконке для настройки интенсивности снега, физики сугробов и языка интерфейса.
+
+### Если Windows ругается на Snowdrift
+
+SmartScreen и Defender могут предупреждать о новой неподписанной программе — это вопрос репутации, а не вируса. Подробная инструкция: [docs/windows-smartscreen.md](docs/windows-smartscreen.md). Для локальной разработки есть скрипт `scripts/allow-defender.ps1`, который добавляет узкие исключения только для папок сборки.
 
 ---
 

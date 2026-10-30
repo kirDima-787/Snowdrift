@@ -48,17 +48,18 @@ pub enum ToastState {
 }
 
 pub struct ToastCallbacks {
-    pub on_update: Box<dyn Fn(String)>,
-    pub on_close: Box<dyn Fn()>,
+    pub on_update: Rc<dyn Fn(String)>,
+    pub on_restart: Option<Rc<dyn Fn()>>,
+    pub on_close: Rc<dyn Fn()>,
 }
 
 /// Card height like a native toast: grows with its content (2-line text, progress bar, buttons)
 fn card_height(state: &ToastState) -> f32 {
     match state {
         ToastState::Checking | ToastState::Downloading { .. } => 120.0,
-        ToastState::Available { .. } => 148.0,
+        ToastState::Available { .. } | ToastState::Downloaded => 148.0,
         ToastState::Error(_) => 124.0,
-        ToastState::UpToDate(_) | ToastState::Downloaded => 106.0,
+        ToastState::UpToDate(_) => 106.0,
     }
 }
 
@@ -316,7 +317,7 @@ impl ToastWindow {
             }
             ToastState::Downloaded => (
                 if ru { "Обновление готово" } else { "Update ready" }.into(),
-                if ru { "Запуск программы установки…" } else { "Launching the installer…" }.into(),
+                if ru { "Перезапустить Snowdrift сейчас для обновления?" } else { "Restart Snowdrift now to apply update?" }.into(),
             ),
             ToastState::Error(err) => {
                 let short: String = if err.chars().count() > 100 { err.chars().take(99).collect::<String>() + "…" } else { err.clone() };
@@ -397,18 +398,18 @@ impl ToastWindow {
                         );
                     }
                 }
-                ToastState::Available { .. } => {
+                ToastState::Available { .. } | ToastState::Downloaded => {
                     // Two equal buttons across the bottom, like native toast actions
                     let top = card.top + 100.0;
                     let mid = (card.left + card.right) / 2.0;
-                    let update = D2D_RECT_F { left: card.left + 16.0, top, right: mid - 4.0, bottom: top + 32.0 };
+                    let action_btn = D2D_RECT_F { left: card.left + 16.0, top, right: mid - 4.0, bottom: top + 32.0 };
                     let dismiss = D2D_RECT_F { left: mid + 4.0, top, right: card.right - 16.0, bottom: top + 32.0 };
-                    self.btn_rect = Some(update);
+                    self.btn_rect = Some(action_btn);
                     self.dismiss_rect = Some(dismiss);
 
                     let accent = if self.hover_btn { [0.50, 0.85, 1.0] } else { ACCENT };
                     if let Ok(b) = brush(accent, 1.0) {
-                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: update, radiusX: 5.0, radiusY: 5.0 }, &b);
+                        target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: action_btn, radiusX: 5.0, radiusY: 5.0 }, &b);
                     }
                     if let Ok(b) = brush([1.0, 1.0, 1.0], if self.hover_dismiss { 0.14 } else { 0.09 }) {
                         target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: dismiss, radiusX: 5.0, radiusY: 5.0 }, &b);
@@ -416,8 +417,13 @@ impl ToastWindow {
                     if let Ok(b) = brush([1.0, 1.0, 1.0], 0.07) {
                         target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: dismiss, radiusX: 5.0, radiusY: 5.0 }, &b, 1.0, None);
                     }
-                    let (l1, l2) = if self.is_ru { ("Обновить", "Закрыть") } else { ("Update", "Dismiss") };
-                    self.draw_text_centered(target, l1, update, 13.0, [0.0, 0.0, 0.0]);
+                    let (l1, l2) = match (&self.state, self.is_ru) {
+                        (ToastState::Downloaded, true) => ("Перезапустить", "Позже"),
+                        (ToastState::Downloaded, false) => ("Restart", "Later"),
+                        (_, true) => ("Обновить", "Закрыть"),
+                        (_, false) => ("Update", "Dismiss"),
+                    };
+                    self.draw_text_centered(target, l1, action_btn, 13.0, [0.0, 0.0, 0.0]);
                     self.draw_text_centered(target, l2, dismiss, 13.0, [1.0, 1.0, 1.0]);
                 }
                 _ => {}
@@ -558,16 +564,29 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             match action {
                 Some(0) => close(),
                 Some(1) => {
-                    let url_opt = TOAST.with_borrow(|toast| {
+                    let mut update_action = None;
+                    let mut restart_action = None;
+                    TOAST.with_borrow(|toast| {
                         if let Some(t) = toast.as_ref() {
-                            if let ToastState::Available { url, .. } = &t.state {
-                                return Some((url.clone(), t.callbacks.clone()));
+                            match &t.state {
+                                ToastState::Available { url, .. } => {
+                                    if let Some(cb) = &t.callbacks {
+                                        update_action = Some((url.clone(), cb.on_update.clone()));
+                                    }
+                                }
+                                ToastState::Downloaded => {
+                                    if let Some(cb) = &t.callbacks {
+                                        restart_action = cb.on_restart.clone();
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        None
                     });
-                    if let Some((url, Some(cb))) = url_opt {
-                        (cb.on_update)(url);
+                    if let Some((url, cb)) = update_action {
+                        cb(url);
+                    } else if let Some(cb) = restart_action {
+                        cb();
                     }
                 }
                 _ => {}

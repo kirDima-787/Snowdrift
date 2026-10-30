@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::mem::size_of;
+use std::rc::Rc;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -40,7 +41,6 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 const TIMER_WELCOME: usize = 1;
 const TIMER_TRAY_HOLD: usize = 1002;
-const TIMER_UPDATE: usize = 2;
 const TIMER_STARTUP: usize = 3;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -107,8 +107,7 @@ pub fn run() -> Result<()> {
         if !settings.welcomed {
             SetTimer(Some(window), TIMER_WELCOME, 1200, None);
         }
-        // Check for updates 5 seconds after startup in background
-        SetTimer(Some(window), TIMER_UPDATE, 5000, None);
+
 
         if std::env::args().any(|arg| arg.eq_ignore_ascii_case("--startup")) {
             // Elegant startup notification when booting with Windows
@@ -223,14 +222,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             );
             LRESULT(0)
         }
-        WM_TIMER if wparam.0 == TIMER_UPDATE => {
-            unsafe {
-                // Next check in 24 hours
-                let _ = SetTimer(Some(window), TIMER_UPDATE, 24 * 60 * 60 * 1000, None);
-            }
-            check_for_updates(window, false);
-            LRESULT(0)
-        }
+
         WM_TIMER if wparam.0 == TIMER_STARTUP => {
             unsafe {
                 let _ = KillTimer(Some(window), TIMER_STARTUP);
@@ -369,10 +361,11 @@ fn check_for_updates(window: HWND, asked: bool) {
             ToastState::Checking,
             is_ru,
             ToastCallbacks {
-                on_update: Box::new(move |url| {
+                on_update: Rc::new(move |url| {
                     download_and_apply(window, url);
                 }),
-                on_close: Box::new(|| {}),
+                on_restart: None,
+                on_close: Rc::new(|| {}),
             },
         );
     }
@@ -398,10 +391,11 @@ fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, 
                 ToastState::Available { version: release.version.clone(), url: release.url.clone() },
                 is_ru,
                 ToastCallbacks {
-                    on_update: Box::new(move |url| {
+                    on_update: Rc::new(move |url| {
                         download_and_apply(window, url);
                     }),
-                    on_close: Box::new(|| {}),
+                    on_restart: None,
+                    on_close: Rc::new(|| {}),
                 },
             );
         }
@@ -410,8 +404,9 @@ fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, 
                 ToastState::UpToDate(current.to_string()),
                 is_ru,
                 ToastCallbacks {
-                    on_update: Box::new(|_| {}),
-                    on_close: Box::new(|| {}),
+                    on_update: Rc::new(|_| {}),
+                    on_restart: None,
+                    on_close: Rc::new(|| {}),
                 },
             );
         }
@@ -423,8 +418,9 @@ fn on_update_checked(window: HWND, result: std::result::Result<Option<Release>, 
                     ToastState::Error(error),
                     is_ru,
                     ToastCallbacks {
-                        on_update: Box::new(|_| {}),
-                        on_close: Box::new(|| {}),
+                        on_update: Rc::new(|_| {}),
+                        on_restart: None,
+                        on_close: Rc::new(|| {}),
                     },
                 );
             }
@@ -439,8 +435,9 @@ fn download_and_apply(window: HWND, url: String) {
         ToastState::Downloading { percent: 0, downloaded: 0, total: 0 },
         is_ru,
         ToastCallbacks {
-            on_update: Box::new(|_| {}),
-            on_close: Box::new(|| {}),
+            on_update: Rc::new(|_| {}),
+            on_restart: None,
+            on_close: Rc::new(|| {}),
         },
     );
 
@@ -466,14 +463,25 @@ fn download_and_apply(window: HWND, url: String) {
 }
 
 fn on_update_downloaded(window: HWND, result: std::result::Result<PathBuf, String>) {
+    let is_ru = APP.with_borrow(|app| app.as_ref().map(|a| a.settings.language.is_ru())).unwrap_or(false);
     match result {
         Ok(installer) => {
-            toast::update_state(ToastState::Downloaded);
-            if let Err(error) = update::run_installer(&installer) {
-                toast::update_state(ToastState::Error(error));
-            } else {
-                quit(window);
-            }
+            let installer_path = installer.clone();
+            toast::show(
+                ToastState::Downloaded,
+                is_ru,
+                ToastCallbacks {
+                    on_update: Rc::new(|_| {}),
+                    on_restart: Some(Rc::new(move || {
+                        if let Err(error) = update::run_installer(&installer_path) {
+                            toast::update_state(ToastState::Error(error));
+                        } else {
+                            quit(window);
+                        }
+                    })),
+                    on_close: Rc::new(|| {}),
+                },
+            );
         }
         Err(error) => {
             toast::update_state(ToastState::Error(error));

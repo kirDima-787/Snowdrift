@@ -76,18 +76,45 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Windows binary & installer
+      - name: Build Windows app
+        shell: bash
+        run: cargo build --release --bin Snowdrift
+
+      # The installer carries the app inside it, so the app must be signed first.
+      - name: Sign Windows app
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERT_PFX_BASE64) {
+            Write-Host "::warning title=Unsigned Windows build::WINDOWS_CERT_PFX_BASE64 is not set. SmartScreen and Defender will warn about this release. See docs/windows-smartscreen.md."
+            exit 0
+          }
+          ./scripts/sign-windows.ps1 -Files target/release/Snowdrift.exe -PfxBase64 $env:WINDOWS_CERT_PFX_BASE64 -Password $env:WINDOWS_CERT_PASSWORD
+
+      - name: Build Windows installer around the signed app
         shell: bash
         run: |
-          cargo build --release --bin Snowdrift
           export SNOWDRIFT_APP="$PWD/target/release/Snowdrift.exe"
           cargo build --release --features setup --bin Snowdrift-Setup
 
-      - name: Sign Windows binaries
+      - name: Sign Windows installer
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERT_PFX_BASE64) {
+            exit 0
+          }
+          ./scripts/sign-windows.ps1 -Files target/release/Snowdrift-Setup.exe -PfxBase64 $env:WINDOWS_CERT_PFX_BASE64 -Password $env:WINDOWS_CERT_PASSWORD
+
+      - name: Write SHA-256 checksum
         shell: pwsh
         run: |
-          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Snowdrift, O=Snowdrift" -CertStoreLocation "Cert:\CurrentUser\My" -HashAlgorithm SHA256
-          & signtool.exe sign /sha1 $cert.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/Snowdrift.exe target/release/Snowdrift-Setup.exe
+          $hash = (Get-FileHash target/release/Snowdrift-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  Snowdrift-Setup.exe" | Set-Content -Encoding ascii SHA256SUMS.txt
 
       - name: Upload Windows binaries to Release
         uses: softprops/action-gh-release@v2
@@ -95,5 +122,6 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             target/release/Snowdrift-Setup.exe
+            SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
