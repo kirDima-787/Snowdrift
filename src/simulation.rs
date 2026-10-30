@@ -23,7 +23,7 @@ const REPOSE: f32 = 0.95;
 const ROUNDING: f32 = 0.08;
 const CURSOR_OFFSET: V2 = V2::new(4.0, -8.0);
 const GRAVITY: f32 = 2500.0;
-const GRAIN_DRAG: f32 = 0.8;
+const GRAIN_DRAG: f32 = 2.2;
 const MAX_GRAINS: usize = 12000;
 const PHASE_WRAP: f32 = 20.0 * PI;
 const LEDGE_INSET: f32 = 0.0;
@@ -716,16 +716,17 @@ impl SnowSimulation {
         } else {
             self.air.breeze()
         };
-        let follow = (dt * 1.2).min(1.0);
-        let settle = (dt * 1.6).min(1.0);
+        let follow = (dt * 2.0).min(1.0);
+        let settle = (dt * 2.8).min(1.0);
         let wake_radius: f32 = self.air.wake_radius;
         let mut wake_velocity = self.air.cursor_velocity;
         let wake_speed = wake_velocity.length();
-        if wake_speed > 1500.0 {
-            wake_velocity *= 1500.0 / wake_speed;
+        let wake_active = wake_speed > 25.0;
+        let max_wake_speed = 180.0;
+        if wake_speed > max_wake_speed {
+            wake_velocity *= max_wake_speed / wake_speed;
         }
         let wake_center = self.air.cursor.unwrap_or(V2::new(-10_000.0, -10_000.0));
-        let wake_active = wake_speed > 20.0;
 
         let mut i = self.air.flakes.len();
         while i > 0 {
@@ -746,8 +747,9 @@ impl SnowSimulation {
                     let dist = distance_squared.sqrt();
                     let falloff = 1.0 - dist / wake_radius;
                     let outward = if dist > 0.1 { diff / dist } else { V2::new(0.0, 1.0) };
-                    let impulse = wake_velocity * 0.85 + outward * (wake_speed * 0.5 + 80.0);
-                    flake.velocity += (impulse - flake.velocity) * (falloff * 14.0 * dt).min(1.0);
+                    // Gentle wake displacement: flakes part smoothly around cursor without scattering across the screen
+                    let impulse = wake_velocity * 0.35 + outward * (wake_velocity.length() * 0.20 + 20.0);
+                    flake.velocity += (impulse - flake.velocity) * (falloff * 8.0 * dt).min(1.0);
                 }
             }
 
@@ -1432,12 +1434,13 @@ impl Air {
 
         // Cast pushed snow out onto the flanks further away to prevent unnatural wall resistance in front of cursor
         let flank_offset = radius + COLUMN_WIDTH * 4.0;
+        let flank_vel = (velocity.x * 0.25).clamp(-120.0, 120.0);
         for (area, x) in [(pushed_left, center.x - flank_offset), (pushed_right, center.x + flank_offset)] {
             if area <= 0.0 {
                 continue;
             }
             let missed = layer.deposit(area, x, true);
-            self.drop_past(layer, missed, x, velocity.x * 0.5);
+            self.drop_past(layer, missed, x, flank_vel);
         }
     }
 
@@ -1446,12 +1449,14 @@ impl Air {
             return 0.0;
         }
         let speed = velocity.length();
+        let speed_clamped = speed.min(500.0);
+        let speed_ratio = speed_clamped / 500.0;
         let offset = origin - center;
         let length = offset.length();
         let outward = if length > 0.001 { offset / length } else { V2::new(0.0, 1.0) };
 
         // Plume of fine snow crystals launched into the air
-        let count = ((area * 1.6) as usize + 2).clamp(2, 14);
+        let count = ((area * 1.4) as usize + 2).clamp(2, 10);
         let share = area / count as f32;
 
         for _ in 0..count {
@@ -1460,24 +1465,26 @@ impl Air {
             }
             let random = &mut self.random;
 
-            // Energetic upward throw like a snowplow / rooster-tail spray
-            let kick_up = random.range(220.0, 500.0) + speed * random.range(0.35, 0.85);
+            // Compact natural upward rooster-tail spray (arcs gracefully 40-80 px above snowbank)
+            let kick_up = random.range(120.0, 220.0) + speed_ratio * random.range(40.0, 80.0);
 
-            // Wide lateral fanning plume
+            // Compact lateral plume around the cursor path (stays tightly clustered around the plow)
             let lateral = if speed > 15.0 && velocity.x.abs() > 10.0 {
-                velocity.x * random.range(0.15, 0.60) + random.range(-120.0, 120.0)
+                let dir = velocity.x.signum();
+                let vel_mag = velocity.x.abs().min(300.0);
+                dir * vel_mag * random.range(0.12, 0.28) + random.range(-35.0, 35.0)
             } else {
-                outward.x * speed * 0.3 + random.range(-110.0, 110.0)
+                outward.x * speed_clamped * 0.18 + random.range(-30.0, 30.0)
             };
 
             let v = V2::new(lateral, kick_up);
-            let p = origin + V2::new(random.range(-2.0, 2.0), random.range(0.0, 3.0));
+            let p = origin + V2::new(random.range(-2.0, 2.0), random.range(0.0, 2.5));
 
             self.grains.push(Grain {
                 position: p,
                 velocity: v,
                 area: share,
-                size: random.range(1.4, 3.5),
+                size: random.range(1.3, 3.0),
                 lump: 0.0,
                 blown: false,
             });
@@ -1486,11 +1493,11 @@ impl Air {
             if random.next() < 0.35 && self.motes.len() < MAX_MOTES {
                 self.motes.push(Mote {
                     position: p,
-                    velocity: V2::new(lateral * 0.5, kick_up * random.range(0.35, 0.70)),
-                    size: random.range(4.0, 10.0),
-                    alpha: random.range(0.12, 0.28),
+                    velocity: V2::new(lateral * 0.35, kick_up * random.range(0.30, 0.50)),
+                    size: random.range(3.0, 6.5),
+                    alpha: random.range(0.10, 0.24),
                     age: 0.0,
-                    life: random.range(0.35, 0.80),
+                    life: random.range(0.30, 0.65),
                 });
             }
         }
