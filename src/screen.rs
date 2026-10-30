@@ -399,6 +399,11 @@ impl Screen {
             None => lowest_open_popup().unwrap_or(HWND_TOPMOST),
         };
         unsafe {
+            if let Ok(current_prev) = GetWindow(self.overlay.0, GW_HWNDPREV)
+                && current_prev == above
+            {
+                return;
+            }
             let _ = SetWindowPos(self.overlay.0, Some(above), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
     }

@@ -76,8 +76,6 @@ struct Window {
     rect: RECT,
     radius: f32,
     cover_only: bool,
-    topmost: bool,
-    zoomed: bool,
 }
 
 /// The windows on screen, front to back, re-read when the system reports a window moving, showing, hiding,
@@ -204,19 +202,23 @@ impl Tracker {
     /// window counts only when the shell also sees a full-screen app, since it fills the display too wherever the
     /// taskbar hides itself.
     pub fn covering(&self, bounds: &RECT) -> Option<&str> {
+        if !self.busy {
+            return None;
+        }
         let foreground = unsafe { GetForegroundWindow() }.0 as isize;
+        if foreground == 0 {
+            return None;
+        }
         for window in &self.windows {
-            let r = &window.rect;
-            if window.cover_only || r.right <= bounds.left || r.left >= bounds.right || r.bottom <= bounds.top || r.top >= bounds.bottom {
+            if window.id != foreground || window.cover_only {
                 continue;
             }
+            let r = &window.rect;
             let fills = r.left <= bounds.left && r.top <= bounds.top && r.right >= bounds.right && r.bottom >= bounds.bottom;
-            if fills && (!window.zoomed || (self.busy && window.id == foreground)) {
+            if fills {
                 return Some(&window.class);
             }
-            if !window.topmost {
-                return None;
-            }
+            break;
         }
         None
     }
@@ -310,8 +312,6 @@ impl Tracker {
                 class,
                 rect,
                 radius,
-                topmost: extended & WS_EX_TOPMOST.0 != 0,
-                zoomed,
             })
         }
     }

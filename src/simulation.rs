@@ -506,7 +506,7 @@ impl SnowSimulation {
         let mut offset = 0;
         for layer in &self.layers {
             let span = 2 * layer.count();
-            if layer.top <= 0.05 || offset + span > buffer.len() {
+            if layer.top <= 0.001 || offset + span > buffer.len() {
                 continue;
             }
             layer.write_smoothed(&mut buffer[offset..offset + span]);

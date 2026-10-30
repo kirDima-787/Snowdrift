@@ -250,7 +250,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             let mut lost = false;
             let mut released = false;
             for screen in screens.iter_mut().filter(|screen| screen.next_due <= now + clock.tolerance()) {
-                let covering = tracker.covering(&screen.monitor.bounds);
+                let covering = (!settings.behind_windows).then(|| tracker.covering(&screen.monitor.bounds)).flatten();
                 if covering.is_some() != screen.covered() {
                     log!("{} {}", screen.monitor.name, covering.map_or("uncovered".to_string(), |class| format!("covered by {class}")));
                     screen.set_covered(covering.is_some());
