@@ -20,22 +20,17 @@ pub struct DesktopLayer {
 pub fn find() -> Option<DesktopLayer> {
     unsafe {
         let progman = FindWindowW(w!("Progman"), None).ok()?;
-        // If icons and wallpaper already exist under Progman, return them immediately
+        // If icons exist under Progman (standard Windows 11), return immediately
         // without sending 0x052C, which prompts Explorer to tear down and rebuild the wallpaper,
-        // causing desktop black flashes.
-        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
-            && FindWindowExW(Some(progman), None, w!("WorkerW"), None).is_ok()
-        {
+        // causing desktop black flashes and periodic desktop resets.
+        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None) {
             return Some(DesktopLayer { parent: progman, icons: Some(icons) });
         }
         // Only if not found, send 0x052C to prompt Explorer to split them:
         for (wparam, lparam) in [(0xD, 1), (0, 0)] {
             let _ = SendMessageTimeoutW(progman, 0x052C, WPARAM(wparam), LPARAM(lparam), SMTO_NORMAL, 1000, None);
         }
-        // Windows 11 24H2 and later keep the icons and the wallpaper as children of Progman.
-        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
-            && FindWindowExW(Some(progman), None, w!("WorkerW"), None).is_ok()
-        {
+        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None) {
             return Some(DesktopLayer { parent: progman, icons: Some(icons) });
         }
         // Earlier, the wallpaper is the top-level WorkerW right behind the one holding the icons.

@@ -640,7 +640,7 @@ fn create_behind(rect: &RECT, layer: &DesktopLayer) -> Result<HWND> {
             WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_NOACTIVATE,
             CLASS,
             w!("Snowdrift"),
-            WS_CHILD | WS_VISIBLE | WS_DISABLED,
+            WS_CHILD | WS_VISIBLE | WS_DISABLED | WS_CLIPSIBLINGS,
             origin.x,
             origin.y,
             rect.right - rect.left,
@@ -683,6 +683,15 @@ fn set_capture(window: HWND, shown: bool) {
 
 unsafe extern "system" fn overlay_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
+        WM_ERASEBKGND => LRESULT(1),
+        WM_PAINT => {
+            unsafe {
+                let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
+                let _ = windows::Win32::Graphics::Gdi::BeginPaint(window, &mut ps);
+                let _ = windows::Win32::Graphics::Gdi::EndPaint(window, &ps);
+            }
+            LRESULT(0)
+        }
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
