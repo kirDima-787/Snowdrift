@@ -88,6 +88,25 @@ fn parse_url(url: &str) -> Result<(String, String, bool), String> {
     Ok((host.to_string(), path.to_string(), is_https))
 }
 
+fn map_winhttp_error(e: windows::core::Error) -> String {
+    let code = e.code().0 as u32;
+    let winhttp_code = code & 0xFFFF;
+    match winhttp_code {
+        12007 => "NO_INTERNET: Cannot resolve host name".to_string(),
+        12029 => "NO_INTERNET: Cannot connect to server".to_string(),
+        12002 => "NO_INTERNET: Connection timed out".to_string(),
+        12030 | 12031 | 12032 => "NO_INTERNET: Connection dropped".to_string(),
+        _ => {
+            let msg = e.message().to_string();
+            if msg.trim().is_empty() {
+                format!("WinHTTP error 0x{:08X}", code)
+            } else {
+                msg
+            }
+        }
+    }
+}
+
 fn fetch_text(url: &str) -> Result<String, String> {
     let bytes = fetch_bytes(url)?;
     String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8 response: {e}"))
@@ -117,7 +136,7 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
         let connection = unsafe {
             let handle = WinHttpConnect(session.0, PCWSTR(host_w.as_ptr()), if is_https { 443 } else { 80 }, 0);
             if handle.is_null() {
-                return Err(format!("Failed to connect to {host}"));
+                return Err(format!("NO_INTERNET: Failed to connect to {host}"));
             }
             Handle(handle)
         };
@@ -141,8 +160,8 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
 
         let headers: Vec<u16> = "User-Agent: Snowdrift\r\nAccept: application/vnd.github+json, */*\r\n".encode_utf16().collect();
         unsafe {
-            WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(|e| e.message())?;
-            WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|e| e.message())?;
+            WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(map_winhttp_error)?;
+            WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(map_winhttp_error)?;
         }
 
         let mut status = 0u32;
@@ -231,7 +250,7 @@ fn download_file(url: &str, target_path: &Path, progress: &Option<Box<dyn Fn(u32
         let connection = unsafe {
             let handle = WinHttpConnect(session.0, PCWSTR(host_w.as_ptr()), if is_https { 443 } else { 80 }, 0);
             if handle.is_null() {
-                return Err(format!("Failed to connect to {host}"));
+                return Err(format!("NO_INTERNET: Failed to connect to {host}"));
             }
             Handle(handle)
         };
@@ -255,8 +274,8 @@ fn download_file(url: &str, target_path: &Path, progress: &Option<Box<dyn Fn(u32
 
         let headers: Vec<u16> = "User-Agent: Snowdrift\r\nAccept: */*\r\n".encode_utf16().collect();
         unsafe {
-            WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(|e| e.message())?;
-            WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|e| e.message())?;
+            WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(map_winhttp_error)?;
+            WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(map_winhttp_error)?;
         }
 
         let mut status = 0u32;

@@ -321,7 +321,24 @@ impl ToastWindow {
             ),
             ToastState::Error(err) => {
                 let short: String = if err.chars().count() > 100 { err.chars().take(99).collect::<String>() + "…" } else { err.clone() };
-                (if ru { "Ошибка обновления" } else { "Update failed" }.into(), short)
+                let lower = err.to_lowercase();
+                let is_offline = err.contains("NO_INTERNET")
+                    || err.contains("12007")
+                    || err.contains("12029")
+                    || err.contains("12002")
+                    || lower.contains("internet")
+                    || lower.contains("connect")
+                    || lower.contains("интернет")
+                    || lower.contains("сеть")
+                    || err.trim().is_empty();
+                if is_offline {
+                    (
+                        if ru { "Нет подключения к интернету" } else { "No internet connection" }.into(),
+                        if ru { "Проверьте соединение с сетью и попробуйте позже." } else { "Check your network connection and try again." }.into(),
+                    )
+                } else {
+                    (if ru { "Ошибка обновления" } else { "Update failed" }.into(), short)
+                }
             }
         }
     }

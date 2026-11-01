@@ -20,20 +20,16 @@ pub struct DesktopLayer {
 pub fn find() -> Option<DesktopLayer> {
     unsafe {
         let progman = FindWindowW(w!("Progman"), None).ok()?;
-        // If icons exist under Progman (standard Windows 11), return immediately
-        // without sending 0x052C, which prompts Explorer to tear down and rebuild the wallpaper,
-        // causing desktop black flashes and periodic desktop resets.
-        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None) {
+
+        // Windows 11 24H2 and later keep the icons and the wallpaper as children of Progman.
+        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
+            && FindWindowExW(Some(progman), None, w!("WorkerW"), None).is_ok()
+        {
             return Some(DesktopLayer { parent: progman, icons: Some(icons) });
         }
-        // Only if not found, send 0x052C to prompt Explorer to split them:
-        for (wparam, lparam) in [(0xD, 1), (0, 0)] {
-            let _ = SendMessageTimeoutW(progman, 0x052C, WPARAM(wparam), LPARAM(lparam), SMTO_NORMAL, 1000, None);
-        }
-        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None) {
-            return Some(DesktopLayer { parent: progman, icons: Some(icons) });
-        }
-        // Earlier, the wallpaper is the top-level WorkerW right behind the one holding the icons.
+
+        // Earlier Windows: check if the wallpaper WorkerW behind the icons is already present
+        // (e.g. from an earlier split or previous session) without sending 0x052C again.
         unsafe extern "system" fn behind_icons(window: HWND, found: LPARAM) -> BOOL {
             unsafe {
                 if FindWindowExW(Some(window), None, w!("SHELLDLL_DefView"), None).is_err() {
@@ -43,6 +39,26 @@ pub fn find() -> Option<DesktopLayer> {
             }
             false.into()
         }
+
+        let mut found: Option<HWND> = None;
+        let _ = EnumWindows(Some(behind_icons), LPARAM(&raw mut found as isize));
+        if let Some(parent) = found {
+            return Some(DesktopLayer { parent, icons: None });
+        }
+
+        // Only send 0x052C if Explorer's wallpaper layer is not yet split:
+        for (wparam, lparam) in [(0xD, 1), (0, 0)] {
+            let _ = SendMessageTimeoutW(progman, 0x052C, WPARAM(wparam), LPARAM(lparam), SMTO_NORMAL, 1000, None);
+        }
+
+        // Windows 11 24H2 and later: check again after 0x052C
+        if let Ok(icons) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
+            && FindWindowExW(Some(progman), None, w!("WorkerW"), None).is_ok()
+        {
+            return Some(DesktopLayer { parent: progman, icons: Some(icons) });
+        }
+
+        // Earlier, the wallpaper is the top-level WorkerW right behind the one holding the icons.
         let mut found: Option<HWND> = None;
         let _ = EnumWindows(Some(behind_icons), LPARAM(&raw mut found as isize));
         found.map(|parent| DesktopLayer { parent, icons: None })
