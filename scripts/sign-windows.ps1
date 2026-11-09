@@ -1,11 +1,4 @@
-# Signs Windows binaries with a real code-signing certificate.
-#
-# In CI the certificate comes from the WINDOWS_CERT_PFX_BASE64 and
-# WINDOWS_CERT_PASSWORD secrets. Locally you can pass a PFX file or the
-# thumbprint of a certificate in Cert:\CurrentUser\My instead.
-#
-# Do not use a self-signed certificate for releases: Windows does not trust it,
-# so SmartScreen keeps warning and Defender may treat the file as suspicious.
+# Signs Windows binaries with an Authenticode code-signing certificate using signtool.
 
 [CmdletBinding()]
 param(
@@ -40,7 +33,7 @@ function Find-SignTool {
 
     $found = foreach ($root in ($roots | Where-Object { Test-Path -LiteralPath $_ })) {
         Get-ChildItem -LiteralPath $root -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -like '*\x64\signtool.exe' }
+        Where-Object { $_.FullName -like '*\x64\signtool.exe' }
     }
 
     $found | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
@@ -74,9 +67,11 @@ try {
             throw 'Password is required when PfxPath is used.'
         }
         $arguments += @('/f', (Resolve-Path -LiteralPath $PfxPath).Path, '/p', $Password)
-    } elseif ($Thumbprint) {
+    }
+    elseif ($Thumbprint) {
         $arguments += @('/sha1', $Thumbprint)
-    } else {
+    }
+    else {
         throw 'Provide PfxPath, PfxBase64, or Thumbprint.'
     }
     $arguments += $Files
@@ -96,7 +91,8 @@ try {
             Write-Host ("Signed {0} by {1}" -f $file, $signature.SignerCertificate.Subject)
         }
     }
-} finally {
+}
+finally {
     if ($temporaryPfx -and (Test-Path -LiteralPath $temporaryPfx)) {
         Remove-Item -LiteralPath $temporaryPfx -Force
     }

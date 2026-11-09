@@ -88,7 +88,7 @@ jobs:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           if (-not $env:WINDOWS_CERT_PFX_BASE64) {
-            Write-Host "::warning title=Unsigned Windows build::WINDOWS_CERT_PFX_BASE64 is not set. SmartScreen and Defender will warn about this release. See docs/windows-smartscreen.md."
+            Write-Host "::warning title=Unsigned Windows build::WINDOWS_CERT_PFX_BASE64 is not set. Publishing unsigned release."
             exit 0
           }
           ./scripts/sign-windows.ps1 -Files target/release/Snowdrift.exe -PfxBase64 $env:WINDOWS_CERT_PFX_BASE64 -Password $env:WINDOWS_CERT_PASSWORD

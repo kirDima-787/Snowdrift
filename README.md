@@ -43,6 +43,10 @@ All settings live in the system tray / menu bar:
 - **Language:** English / Russian
 - **Check for Updates:** In-app updates via toast notifications
 
+## Windows SmartScreen / Defender
+
+Windows SmartScreen ("Windows protected your PC") or Defender may show a warning when launching new releases. This is a standard reputation check for recently published open-source applications, not a virus. To proceed, click **More info → Run anyway**. See [docs/windows-smartscreen.md](docs/windows-smartscreen.md) for details and checksum verification instructions.
+
 ## Building
 
 ```sh
@@ -55,12 +59,6 @@ cargo build --release --bin Snowdrift
 # Linux
 cargo build --release --bin Snowdrift
 ```
-
-### Windows SmartScreen / Defender
-
-New unsigned Windows builds trigger SmartScreen ("Windows protected your PC") and can be flagged by Defender's heuristics. This is a reputation issue, not a virus. Releases are signed in CI when `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` are configured. See [docs/windows-smartscreen.md](docs/windows-smartscreen.md) for the signing setup, Microsoft false-positive submission, and the local development exclusion script.
-
-> Never ship a build signed with `New-SelfSignedCertificate`: Windows does not trust it. Sign `Snowdrift.exe` before building the installer, because the installer carries a copy of the app inside it.
 
 ---
 
@@ -75,9 +73,9 @@ Snowdrift - легкий и атмосферный падающий снег н�
 2. Запустите приложение - иконка снежинки появится в системном трее Windows (или строке меню macOS).
 3. Кликните по иконке для настройки интенсивности снега, физики сугробов и языка интерфейса.
 
-### Если Windows ругается на Snowdrift
+### Если Windows предупреждает о безопасности
 
-SmartScreen и Defender могут предупреждать о новой неподписанной программе — это вопрос репутации, а не вируса. Подробная инструкция: [docs/windows-smartscreen.md](docs/windows-smartscreen.md). Для локальной разработки есть скрипт `scripts/allow-defender.ps1`, который добавляет узкие исключения только для папок сборки.
+SmartScreen или Defender могут показывать предупреждение при запуске — это стандартное поведение Windows для новых программ без накопленной репутации, а не признак вируса. Чтобы продолжить, нажмите **Подробнее → Выполнить в любом случае**. Подробная инструкция и проверка хэшей: [docs/windows-smartscreen.md](docs/windows-smartscreen.md).
 
 ---
 

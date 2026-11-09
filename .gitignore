@@ -6,3 +6,4 @@ desktop.ini
 *.p12
 *.pvk
 *.snk
+scripts/allow-defender.ps1
