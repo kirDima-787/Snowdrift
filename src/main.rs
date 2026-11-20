@@ -24,6 +24,8 @@ mod toast;
 mod tracker;
 #[cfg(windows)]
 mod welcome;
+#[cfg(windows)]
+mod telemetry;
 
 #[cfg(target_os = "linux")]
 mod linux;

@@ -7,11 +7,11 @@
 <p align="center">It's snowing on your desktop.</p>
 
 <p align="center">
-  <a href="https://github.com/kirDima-787/Snowdrift/releases/latest/download/Snowdrift-Setup.exe"><b>Download for Windows</b></a>
+  <a href="https://snowdrift.pages.dev/download/windows"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/kirDima-787/Snowdrift/releases/latest/download/Snowdrift.dmg"><b>Download for macOS</b></a>
+  <a href="https://snowdrift.pages.dev/download/macos"><b>Download for macOS</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/kirDima-787/Snowdrift/releases/latest/download/Snowdrift-linux-x86_64.tar.gz"><b>Download for Linux</b></a>
+  <a href="https://snowdrift.pages.dev/download/linux"><b>Download for Linux</b></a>
   <br>
   <sub>Windows 10 or 11 · macOS 14 or later · Linux · free and open source</sub>
 </p>

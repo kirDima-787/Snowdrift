@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR};
+use windows::Win32::System::Com::CoCreateGuid;
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
@@ -110,4 +111,56 @@ pub fn animations_enabled() -> bool {
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&raw mut enabled).cast::<c_void>()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
     };
     result.is_err() || enabled.as_bool()
+}
+
+/// An anonymous install identifier for telemetry (random GUID, no personal info).
+pub fn install_id() -> String {
+    let mut buffer = [0u16; 64];
+    let mut size = (buffer.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            KEY,
+            w!("installId"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buffer.as_mut_ptr().cast::<c_void>()),
+            Some(&mut size),
+        )
+    };
+    if status == ERROR_SUCCESS {
+        let length = buffer.iter().position(|&c| c == 0).unwrap_or(0);
+        let id = String::from_utf16_lossy(&buffer[..length]);
+        if !id.is_empty() {
+            return id;
+        }
+    }
+
+    let guid = unsafe { CoCreateGuid().unwrap_or_default() };
+    let id = format!(
+        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        guid.data1,
+        guid.data2,
+        guid.data3,
+        guid.data4[0],
+        guid.data4[1],
+        guid.data4[2],
+        guid.data4[3],
+        guid.data4[4],
+        guid.data4[5],
+        guid.data4[6],
+        guid.data4[7],
+    );
+    let id_w: Vec<u16> = id.encode_utf16().chain([0]).collect();
+    unsafe {
+        let _ = RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            KEY,
+            w!("installId"),
+            REG_SZ.0,
+            Some(id_w.as_ptr().cast()),
+            (id_w.len() * 2) as u32,
+        );
+    }
+    id
 }

@@ -23,6 +23,7 @@ use windows::core::{PCWSTR, Result, w};
 
 use crate::log;
 use crate::prefs::{self, Settings};
+use crate::telemetry;
 use crate::snow::{self, Command, Links};
 use crate::welcome::{self, Handlers};
 use crate::panel::{self, PanelAction};
@@ -42,6 +43,7 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 const TIMER_WELCOME: usize = 1;
 const TIMER_TRAY_HOLD: usize = 1002;
 const TIMER_STARTUP: usize = 3;
+const TIMER_TELEMETRY: usize = 4;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
@@ -113,6 +115,9 @@ pub fn run() -> Result<()> {
             // Elegant startup notification when booting with Windows
             SetTimer(Some(window), TIMER_STARTUP, 1500, None);
         }
+
+        telemetry::start();
+        SetTimer(Some(window), TIMER_TELEMETRY, 30 * 60 * 1000, None);
 
         APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false }));
 
@@ -233,6 +238,10 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             } else {
                 notify(window, "Snowdrift", "Winter snowfall has started.");
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_TELEMETRY => {
+            telemetry::heartbeat();
             LRESULT(0)
         }
         WM_UPDATE_CHECK => {
@@ -511,6 +520,7 @@ fn notify(window: HWND, title: &str, text: &str) {
 }
 
 fn quit(window: HWND) {
+    telemetry::stop();
     panel::close();
     toast::close();
     remove_tray_icon(window);
