@@ -37,14 +37,55 @@ impl Drop for Handle {
 }
 
 pub fn check() -> Result<Option<Release>, String> {
-    let body = fetch_text(&format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"))?;
-    let tag = field(&body, "tag_name").ok_or("The latest release has no tag")?;
-    let version = tag.trim_start_matches('v');
-    if !body.contains(&format!("\"{INSTALLER}\"")) || !newer(version, env!("CARGO_PKG_VERSION")) {
-        return Ok(None);
+    // 1. Try official GitHub REST API first
+    let api_url = format!("https://api.github.com/repos/{REPOSITORY}/releases/latest");
+    if let Ok(body) = fetch_text(&api_url) {
+        if let Some(tag) = field(&body, "tag_name") {
+            let version = tag.trim_start_matches('v');
+            if body.contains(&format!("\"{INSTALLER}\"")) && newer(version, env!("CARGO_PKG_VERSION")) {
+                let url = format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{INSTALLER}");
+                return Ok(Some(Release { version: version.to_string(), url }));
+            } else if !newer(version, env!("CARGO_PKG_VERSION")) {
+                return Ok(None);
+            }
+        }
     }
-    let url = format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{INSTALLER}");
-    Ok(Some(Release { version: version.to_string(), url }))
+
+    // 2. Fallback to GitHub web releases page (immune to GitHub REST API 60 req/hr rate limits)
+    let web_url = format!("https://github.com/{REPOSITORY}/releases/latest");
+    if let Ok(html) = fetch_text(&web_url) {
+        if let Some(tag) = extract_tag_from_html(&html) {
+            let version = tag.trim_start_matches('v');
+            if html.contains(INSTALLER) && newer(version, env!("CARGO_PKG_VERSION")) {
+                let url = format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{INSTALLER}");
+                return Ok(Some(Release { version: version.to_string(), url }));
+            } else if !newer(version, env!("CARGO_PKG_VERSION")) {
+                return Ok(None);
+            }
+        }
+    }
+
+    // 3. Fallback error
+    Err("HTTP 403: GitHub rate limit reached or server unavailable".into())
+}
+
+fn extract_tag_from_html(html: &str) -> Option<String> {
+    let needle = "/releases/tag/";
+    let mut pos = 0;
+    while let Some(idx) = html[pos..].find(needle) {
+        let start = pos + idx + needle.len();
+        let end_idx = html[start..].find(|c: char| c == '"' || c == '\'' || c == '/' || c == '?' || c == '#' || c.is_whitespace());
+        if let Some(end) = end_idx {
+            let tag = &html[start..start + end];
+            if !tag.is_empty() && tag.starts_with('v') {
+                return Some(tag.to_string());
+            }
+            pos = start + end;
+        } else {
+            break;
+        }
+    }
+    None
 }
 
 pub fn download_installer(url: &str, progress: Option<Box<dyn Fn(u32, u32) + Send>>) -> Result<PathBuf, String> {
@@ -158,7 +199,7 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
             Handle(handle)
         };
 
-        let headers: Vec<u16> = "User-Agent: Snowdrift\r\nAccept: application/vnd.github+json, */*\r\n".encode_utf16().collect();
+        let headers: Vec<u16> = format!("User-Agent: Snowdrift/{} (Windows; x64)\r\nAccept: application/vnd.github+json, text/html, */*\r\n", env!("CARGO_PKG_VERSION")).encode_utf16().collect();
         unsafe {
             WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(map_winhttp_error)?;
             WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(map_winhttp_error)?;
@@ -272,7 +313,7 @@ fn download_file(url: &str, target_path: &Path, progress: &Option<Box<dyn Fn(u32
             Handle(handle)
         };
 
-        let headers: Vec<u16> = "User-Agent: Snowdrift\r\nAccept: */*\r\n".encode_utf16().collect();
+        let headers: Vec<u16> = format!("User-Agent: Snowdrift/{} (Windows; x64)\r\nAccept: */*\r\n", env!("CARGO_PKG_VERSION")).encode_utf16().collect();
         unsafe {
             WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(map_winhttp_error)?;
             WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(map_winhttp_error)?;
@@ -357,4 +398,15 @@ fn download_file(url: &str, target_path: &Path, progress: &Option<Box<dyn Fn(u32
     }
 
     Err("Too many redirects".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_tag_from_html() {
+        let sample = r#"<meta property="og:url" content="https://github.com/kirDima-787/Snowdrift/releases/tag/v1.0.27" />"#;
+        assert_eq!(extract_tag_from_html(sample), Some("v1.0.27".to_string()));
+    }
 }

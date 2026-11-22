@@ -235,7 +235,6 @@ impl ToastWindow {
         }
     }
 
-    /// The card height depends on the state (progress bar / buttons) — resize only when it changes
     fn sync_size(&mut self) {
         if window_size(&self.state, self.scale) != self.size {
             self.reposition();
@@ -335,6 +334,11 @@ impl ToastWindow {
                     (
                         if ru { "Нет подключения к интернету" } else { "No internet connection" }.into(),
                         if ru { "Проверьте соединение с сетью и попробуйте позже." } else { "Check your network connection and try again." }.into(),
+                    )
+                } else if err.contains("403") {
+                    (
+                        if ru { "Лимит запросов к GitHub" } else { "GitHub rate limit" }.into(),
+                        if ru { "Превышен лимит запросов к GitHub. Попробуйте через некоторое время." } else { "Too many requests to GitHub. Please try again later." }.into(),
                     )
                 } else {
                     (if ru { "Ошибка обновления" } else { "Update failed" }.into(), short)
