@@ -8,3 +8,4 @@ desktop.ini
 *.snk
 scripts/allow-defender.ps1
 *.zip
+/worker/
