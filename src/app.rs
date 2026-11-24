@@ -62,6 +62,17 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
+fn snowfall_mode_name(snowfall: Snowfall) -> &'static str {
+    match snowfall {
+        Snowfall::Off => "off",
+        Snowfall::Light => "light",
+        Snowfall::Steady => "steady",
+        Snowfall::Heavy => "heavy",
+        Snowfall::Variable => "variable",
+        Snowfall::Blizzard => "blizzard",
+    }
+}
+
 /// The tray icon and its menu, and the system events that pause the snow, on the main thread;
 /// the snow itself runs on its own thread so menus and other modal loops never stall it.
 pub fn run() -> Result<()> {
@@ -116,8 +127,10 @@ pub fn run() -> Result<()> {
             SetTimer(Some(window), TIMER_STARTUP, 1500, None);
         }
 
-        telemetry::start();
-        SetTimer(Some(window), TIMER_TELEMETRY, 30 * 60 * 1000, None);
+        let is_snowing = settings.snowfall != Snowfall::Off;
+        let mode_str = snowfall_mode_name(settings.snowfall);
+        telemetry::start(is_snowing, mode_str);
+        SetTimer(Some(window), TIMER_TELEMETRY, 5 * 60 * 1000, None);
 
         APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false }));
 
@@ -169,6 +182,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
                 let Some(app) = app else { return };
                 app.settings.snowfall = Snowfall::Blizzard;
                 send(app, Command::Snowfall(Snowfall::Blizzard));
+                telemetry::snow_changed(true, "blizzard");
             });
             LRESULT(0)
         }
@@ -241,7 +255,13 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == TIMER_TELEMETRY => {
-            telemetry::heartbeat();
+            APP.with_borrow(|app| {
+                if let Some(app) = app {
+                    let is_snowing = app.settings.snowfall != Snowfall::Off && !app.locked && !app.display_off && !app.away;
+                    let mode_str = snowfall_mode_name(app.settings.snowfall);
+                    telemetry::heartbeat(is_snowing, mode_str);
+                }
+            });
             LRESULT(0)
         }
         WM_UPDATE_CHECK => {
@@ -327,6 +347,9 @@ fn handle_panel_action(window: HWND, action: PanelAction) {
             app.settings.snowfall = snowfall;
             app.settings.save();
             send(app, Command::Snowfall(snowfall));
+            let is_snowing = snowfall != Snowfall::Off;
+            let mode_str = snowfall_mode_name(snowfall);
+            telemetry::snow_changed(is_snowing, mode_str);
         }),
         PanelAction::Accumulate(accumulate) => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };

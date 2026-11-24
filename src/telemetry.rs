@@ -32,27 +32,41 @@ impl Drop for Handle {
     }
 }
 
-pub fn start() {
+pub fn start(snowing: bool, mode: &str) {
     START_TIME.get_or_init(Instant::now);
-    send_event("start", 0);
+    send_event("start", snowing, mode, 0);
 }
 
-pub fn heartbeat() {
+pub fn heartbeat(snowing: bool, mode: &str) {
     if let Some(start) = START_TIME.get() {
         let elapsed_mins = start.elapsed().as_secs() / 60;
         LAST_HEARTBEAT_SECS.store(start.elapsed().as_secs(), Ordering::Relaxed);
-        send_event("heartbeat", elapsed_mins);
+        send_event("heartbeat", snowing, mode, elapsed_mins);
     }
+}
+
+pub fn snow_changed(snowing: bool, mode: &str) {
+    let elapsed_mins = START_TIME
+        .get()
+        .map(|s| s.elapsed().as_secs() / 60)
+        .unwrap_or(0);
+    let event = if snowing { "snow_resume" } else { "snow_off" };
+    send_event(event, snowing, mode, elapsed_mins);
 }
 
 pub fn stop() {
     if let Some(start) = START_TIME.get() {
         let elapsed_mins = start.elapsed().as_secs() / 60;
-        send_event("stop", elapsed_mins);
+        let uid = prefs::install_id();
+        let version = env!("CARGO_PKG_VERSION");
+        let payload = format!(
+            r#"{{"uid":"{uid}","event":"stop","snowing":false,"mode":"off","version":"{version}","os":"windows","duration_mins":{elapsed_mins}}}"#
+        );
+        let _ = post_json(ENDPOINT, &payload);
     }
 }
 
-fn send_event(event: &'static str, duration_mins: u64) {
+fn send_event(event: &'static str, snowing: bool, mode: &str, duration_mins: u64) {
     if ENDPOINT.is_empty() {
         return;
     }
@@ -60,7 +74,7 @@ fn send_event(event: &'static str, duration_mins: u64) {
     let uid = prefs::install_id();
     let version = env!("CARGO_PKG_VERSION");
     let payload = format!(
-        r#"{{"uid":"{uid}","event":"{event}","version":"{version}","os":"windows","duration_mins":{duration_mins}}}"#
+        r#"{{"uid":"{uid}","event":"{event}","snowing":{snowing},"mode":"{mode}","version":"{version}","os":"windows","duration_mins":{duration_mins}}}"#
     );
 
     // Completely detached thread with 2s timeout: silent, non-blocking, zero impact on UI or exit
